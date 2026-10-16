@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,24 @@ import (
 	"strings"
 	"time"
 )
+
+// APIError is a non-2xx response from the GoDaddy API.
+type APIError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("API error: status %d, body: %s", e.StatusCode, e.Body)
+}
+
+// IsNotFound reports whether err wraps a GoDaddy 404 response. Use it
+// instead of matching "404" in the message: v3 error bodies carry random
+// correlation IDs that can contain those digits.
+func IsNotFound(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
+}
 
 // RateLimitResponse represents the structure of rate limit error response
 type RateLimitResponse struct {
@@ -29,6 +48,13 @@ type Client struct {
 	baseURL    string
 	apiKey     string
 	apiSecret  string
+	// apiToken is a GoDaddy Personal Access Token (PAT). When set, the client
+	// sends it as a Bearer token and uses the v3 Domains API where v3 has the
+	// endpoint. Without it, the client uses the sso-key on v1 as before.
+	apiToken string
+
+	operationPollInterval time.Duration
+	operationTimeout      time.Duration
 }
 
 type ClientOption func(*Client)
@@ -50,9 +76,11 @@ func NewClient(apiKey, apiSecret string, opts ...ClientOption) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		baseURL:   productionURL,
-		apiKey:    apiKey,
-		apiSecret: apiSecret,
+		baseURL:               productionURL,
+		apiKey:                apiKey,
+		apiSecret:             apiSecret,
+		operationPollInterval: 2 * time.Second,
+		operationTimeout:      10 * time.Minute,
 	}
 
 	for _, opt := range opts {
@@ -62,11 +90,35 @@ func NewClient(apiKey, apiSecret string, opts ...ClientOption) *Client {
 	return client
 }
 
-func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}) (*http.Response, error) {
-	return c.doRequestWithRetry(ctx, method, path, body, 0)
+// NewTokenClient creates a client that authenticates with a GoDaddy Personal
+// Access Token (PAT) instead of an API key and secret.
+func NewTokenClient(apiToken string, opts ...ClientOption) *Client {
+	client := NewClient("", "", opts...)
+	client.apiToken = strings.TrimSpace(apiToken)
+	return client
 }
 
-func (c *Client) doRequestWithRetry(ctx context.Context, method, path string, body interface{}, retryCount int) (*http.Response, error) {
+// UsesAPIToken reports whether the client authenticates with a PAT.
+func (c *Client) UsesAPIToken() bool {
+	return c.apiToken != ""
+}
+
+func (c *Client) authorizationHeader() string {
+	if c.UsesAPIToken() {
+		return "Bearer " + c.apiToken
+	}
+	return fmt.Sprintf("sso-key %s:%s", c.apiKey, c.apiSecret)
+}
+
+func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}) (*http.Response, error) {
+	return c.doRequestWithRetry(ctx, method, path, body, nil, 0)
+}
+
+func (c *Client) doRequestWithHeaders(ctx context.Context, method, path string, body interface{}, headers map[string]string) (*http.Response, error) {
+	return c.doRequestWithRetry(ctx, method, path, body, headers, 0)
+}
+
+func (c *Client) doRequestWithRetry(ctx context.Context, method, path string, body interface{}, headers map[string]string, retryCount int) (*http.Response, error) {
 	const maxRetries = 3
 	
 	var bodyReader io.Reader
@@ -83,9 +135,12 @@ func (c *Client) doRequestWithRetry(ctx context.Context, method, path string, bo
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", fmt.Sprintf("sso-key %s:%s", c.apiKey, c.apiSecret))
+	req.Header.Set("Authorization", c.authorizationHeader())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -124,7 +179,7 @@ func (c *Client) doRequestWithRetry(ctx context.Context, method, path string, bo
 			}
 			
 			// Recursive retry
-			return c.doRequestWithRetry(ctx, method, path, body, retryCount+1)
+			return c.doRequestWithRetry(ctx, method, path, body, headers, retryCount+1)
 		}
 		
 		// DIAGNOSTIC LOG for non-429 errors or max retries reached
@@ -133,7 +188,7 @@ func (c *Client) doRequestWithRetry(ctx context.Context, method, path string, bo
 				maxRetries, req.Method, req.URL.Path)
 		}
 		
-		return nil, fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
 	}
 
 	return resp, nil

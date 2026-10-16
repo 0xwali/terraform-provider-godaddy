@@ -6,6 +6,7 @@ package provider
 import (
 	"context"
 	"os"
+	"strings"
 
 	"github.com/bearcode33/terraform-provider-godaddy/internal/godaddy"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -30,6 +31,7 @@ type GoDaddyProvider struct {
 type GoDaddyProviderModel struct {
 	APIKey      types.String `tfsdk:"api_key"`
 	APISecret   types.String `tfsdk:"api_secret"`
+	APIToken    types.String `tfsdk:"api_token"`
 	Environment types.String `tfsdk:"environment"`
 }
 
@@ -52,6 +54,11 @@ func (p *GoDaddyProvider) Schema(ctx context.Context, req provider.SchemaRequest
 				Optional:            true,
 				Sensitive:           true,
 			},
+			"api_token": schema.StringAttribute{
+				MarkdownDescription: "GoDaddy Personal Access Token (PAT). When set, the provider uses the v3 Domains API with Bearer auth, and `api_key` and `api_secret` are not needed. Setting both in the configuration is an error. Can also be set via GODADDY_API_TOKEN environment variable.",
+				Optional:            true,
+				Sensitive:           true,
+			},
 			"environment": schema.StringAttribute{
 				MarkdownDescription: "GoDaddy API environment. Valid values are 'production' (default) and 'test'. Can also be set via GODADDY_ENVIRONMENT environment variable.",
 				Optional:            true,
@@ -69,7 +76,20 @@ func (p *GoDaddyProvider) Configure(ctx context.Context, req provider.ConfigureR
 		return
 	}
 
-	// Get API credentials from config or environment
+	// Get API credentials from config or environment. Values in the provider
+	// block beat environment variables, so a stray GODADDY_API_TOKEN cannot
+	// switch a config that sets api_key and api_secret to another account.
+	tokenInConfig := configured(data.APIToken)
+	keyInConfig := configured(data.APIKey) || configured(data.APISecret)
+
+	if tokenInConfig && keyInConfig {
+		resp.Diagnostics.AddError(
+			"Conflicting GoDaddy Credentials",
+			"Set either api_token, or api_key and api_secret, in the provider configuration, not both.",
+		)
+		return
+	}
+
 	apiKey := os.Getenv("GODADDY_API_KEY")
 	if !data.APIKey.IsNull() {
 		apiKey = data.APIKey.ValueString()
@@ -80,17 +100,46 @@ func (p *GoDaddyProvider) Configure(ctx context.Context, req provider.ConfigureR
 		apiSecret = data.APISecret.ValueString()
 	}
 
+	apiToken := ""
+	switch {
+	case tokenInConfig:
+		apiToken = data.APIToken.ValueString()
+	case !keyInConfig:
+		apiToken = os.Getenv("GODADDY_API_TOKEN")
+		if strings.TrimSpace(apiToken) != "" && (apiKey != "" || apiSecret != "") {
+			resp.Diagnostics.AddError(
+				"Conflicting GoDaddy Credentials",
+				"GODADDY_API_TOKEN and GODADDY_API_KEY/GODADDY_API_SECRET are both set. "+
+					"Unset one of them, or set the credential you want in the provider configuration.",
+			)
+			return
+		}
+	}
+
 	environment := os.Getenv("GODADDY_ENVIRONMENT")
 	if !data.Environment.IsNull() {
 		environment = data.Environment.ValueString()
+	}
+
+	var opts []godaddy.ClientOption
+	if environment == "test" {
+		opts = append(opts, godaddy.WithTestEnvironment())
+	}
+
+	if strings.TrimSpace(apiToken) != "" {
+		client := godaddy.NewTokenClient(apiToken, opts...)
+		resp.DataSourceData = client
+		resp.ResourceData = client
+		return
 	}
 
 	// Validate required fields
 	if apiKey == "" {
 		resp.Diagnostics.AddError(
 			"Missing API Key",
-			"The provider requires an API key to be configured. "+
-				"Set the api_key attribute in the provider configuration or the GODADDY_API_KEY environment variable.",
+			"The provider requires an API key or an API token to be configured. "+
+				"Set the api_key attribute in the provider configuration or the GODADDY_API_KEY environment variable, "+
+				"or set api_token / GODADDY_API_TOKEN to use a Personal Access Token.",
 		)
 	}
 
@@ -98,7 +147,8 @@ func (p *GoDaddyProvider) Configure(ctx context.Context, req provider.ConfigureR
 		resp.Diagnostics.AddError(
 			"Missing API Secret",
 			"The provider requires an API secret to be configured. "+
-				"Set the api_secret attribute in the provider configuration or the GODADDY_API_SECRET environment variable.",
+				"Set the api_secret attribute in the provider configuration or the GODADDY_API_SECRET environment variable, "+
+				"or set api_token / GODADDY_API_TOKEN to use a Personal Access Token.",
 		)
 	}
 
@@ -107,14 +157,14 @@ func (p *GoDaddyProvider) Configure(ctx context.Context, req provider.ConfigureR
 	}
 
 	// Create GoDaddy client
-	var opts []godaddy.ClientOption
-	if environment == "test" {
-		opts = append(opts, godaddy.WithTestEnvironment())
-	}
-
 	client := godaddy.NewClient(apiKey, apiSecret, opts...)
 	resp.DataSourceData = client
 	resp.ResourceData = client
+}
+
+// configured reports whether a provider attribute was set to a non-blank value.
+func configured(value types.String) bool {
+	return !value.IsNull() && !value.IsUnknown() && strings.TrimSpace(value.ValueString()) != ""
 }
 
 func (p *GoDaddyProvider) Resources(ctx context.Context) []func() resource.Resource {

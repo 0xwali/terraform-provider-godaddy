@@ -29,7 +29,7 @@ A comprehensive Terraform provider for managing GoDaddy domains and DNS records 
 
 - [Terraform](https://www.terraform.io/downloads.html) >= 1.0
 - [Go](https://golang.org/doc/install) >= 1.23 (for development)
-- GoDaddy API credentials ([Get them here](https://developer.godaddy.com/keys))
+- GoDaddy API credentials: a Personal Access Token (PAT), or a classic API key and secret ([Get them here](https://developer.godaddy.com/keys))
 
 ### Installation
 
@@ -65,6 +65,21 @@ make install
 
 ### Provider Configuration
 
+The provider takes one of two credentials.
+
+**Personal Access Token (PAT).** GoDaddy recommends this one. The provider sends it as a
+Bearer token and uses the v3 Domains API.
+
+```hcl
+provider "godaddy" {
+  api_token   = var.godaddy_api_token # Or set GODADDY_API_TOKEN
+  environment = "production"          # Or set GODADDY_ENVIRONMENT
+}
+```
+
+**Classic API key and secret.** This works the same as before, on the v1 API. GoDaddy has
+deprecated the key for Domains (through 2026), and it does not work with v3.
+
 ```hcl
 provider "godaddy" {
   api_key     = var.godaddy_api_key    # Or set GODADDY_API_KEY
@@ -73,15 +88,78 @@ provider "godaddy" {
 }
 ```
 
+Values in the provider block beat environment variables. Setting `api_token` and
+`api_key`/`api_secret` together in the provider block is an error, and so is setting
+`GODADDY_API_TOKEN` together with `GODADDY_API_KEY`/`GODADDY_API_SECRET`. That way a
+stray variable cannot switch Terraform to another GoDaddy account.
+
 ### Environment Variables
 
 Set these environment variables to avoid hardcoding credentials:
 
 ```bash
+# Personal Access Token
+export GODADDY_API_TOKEN="your-pat"
+
+# Or the classic key and secret
 export GODADDY_API_KEY="your-api-key"
 export GODADDY_API_SECRET="your-api-secret"
+
 export GODADDY_ENVIRONMENT="production"  # or "test" for OTE
 ```
+
+### Personal Access Token scopes
+
+Give the token only the scopes your configuration needs:
+
+| What you manage | Scopes |
+|---|---|
+| Read domains (`godaddy_domain` data source, plan, import) | `domains.domain:read` |
+| `nameservers` on `godaddy_domain` | `domains.nameserver:update` |
+| `renew_auto` and `locked` on `godaddy_domain` | `domains.domain:update` |
+| `contact_*` blocks on `godaddy_domain` | `domains.contact:update` |
+| `godaddy_dns_record` and the `godaddy_dns_records` data source | `domains.domain:read`, plus `domains.dns:update` to change records |
+
+Anything that reads a domain or its records needs `domains.domain:read`. A token without
+a scope gets `403 Forbidden` on the calls that need it. Scope names are from
+[GoDaddy's auth docs](https://developer.godaddy.com/docs/api-users/auth).
+
+`locked` and `renew_auto` default to `true`. If the domain has either one off and your
+token has no `domains.domain:update` scope, set them in the resource to the values the
+domain has now. Otherwise the provider tries to change them and gets a 403. For example,
+with a token that only has `domains.domain:read` and `domains.nameserver:update`:
+
+```hcl
+resource "godaddy_domain" "example" {
+  domain      = "example.com"
+  locked      = false # match the current value
+  renew_auto  = false # match the current value
+  nameservers = ["ns1.example-dns.com", "ns2.example-dns.com"]
+}
+```
+
+### Which API the token uses
+
+With a token, the provider calls the v3 Domains API wherever v3 has the endpoint. v3 does
+not cover everything yet, so a few calls still go to v1. GoDaddy's docs say v1 accepts a
+PAT as well.
+
+| Operation | API with a token |
+|---|---|
+| Read a domain | v3, plus a v1 read for contacts and the protection flags that v3 does not return |
+| Update nameservers, auto-renew, transfer lock | v3 (waits for the async operation to finish) |
+| Update contacts | v1 |
+| DNS records of type A, AAAA, CNAME, MX, SRV, TXT | v3 |
+| DNS records of other types (CAA, NS, SOA, SSHFP, TLSA, ...) | v1 |
+| DNS records with a TTL above 86400 (v3's maximum) | v1 |
+| List every record in a zone | v3 for the types above, v1 for the rest |
+
+v3 changes DNS records one at a time by record ID. When the provider replaces a group of
+records of one type and name, it makes several calls, so the change is not atomic the way
+the v1 replace is.
+
+A domain read with a token always makes a v1 call too. If GoDaddy ever stops taking a PAT
+on v1, domain reads fail with a v1 error.
 
 ## Usage Examples
 
@@ -278,7 +356,7 @@ Manages a GoDaddy domain configuration.
 - `privacy` (Optional) - Enable WHOIS privacy (default: false)
 - `renew_auto` (Optional) - Enable auto-renewal (default: true)
 - `expiration_protected` (Optional) - Enable expiration protection (default: true)
-- `nameservers` (Optional) - List of custom nameservers
+- `nameservers` (Optional) - List of nameservers. A list of GoDaddy nameservers (`*.domaincontrol.com`) matches whichever GoDaddy pair your account gets; see `assigned_nameservers`
 - `contact_admin` (Optional) - Administrative contact
 - `contact_billing` (Optional) - Billing contact
 - `contact_registrant` (Optional) - Registrant contact
@@ -290,6 +368,7 @@ Manages a GoDaddy domain configuration.
 - `expires` - Domain expiration date
 - `hold_registrar` - Registrar hold status
 - `transfer_protected` - Transfer protection status
+- `assigned_nameservers` - Nameservers GoDaddy reports (can differ from `nameservers` with GoDaddy nameservers)
 - `created_at` - Domain creation date
 - `modified_at` - Last modification date
 

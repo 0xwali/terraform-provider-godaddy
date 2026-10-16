@@ -8,10 +8,14 @@ import (
 
 	"github.com/bearcode33/terraform-provider-godaddy/internal/godaddy"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -40,6 +44,7 @@ type DomainResourceModel struct {
 	RenewAuto           types.Bool   `tfsdk:"renew_auto"`
 	TransferProtected   types.Bool   `tfsdk:"transfer_protected"`
 	Nameservers         types.List   `tfsdk:"nameservers"`
+	AssignedNameservers types.List   `tfsdk:"assigned_nameservers"`
 	ContactAdmin        types.Object `tfsdk:"contact_admin"`
 	ContactBilling      types.Object `tfsdk:"contact_billing"`
 	ContactRegistrant   types.Object `tfsdk:"contact_registrant"`
@@ -64,10 +69,16 @@ func (r *DomainResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			"status": schema.StringAttribute{
 				MarkdownDescription: "The current status of the domain.",
 				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"expires": schema.StringAttribute{
 				MarkdownDescription: "The expiration date of the domain.",
 				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"expiration_protected": schema.BoolAttribute{
 				MarkdownDescription: "Whether the domain is protected from expiration.",
@@ -78,6 +89,9 @@ func (r *DomainResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			"hold_registrar": schema.BoolAttribute{
 				MarkdownDescription: "Whether the domain has a registrar hold.",
 				Computed:            true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"locked": schema.BoolAttribute{
 				MarkdownDescription: "Whether the domain is locked to prevent transfers.",
@@ -100,36 +114,62 @@ func (r *DomainResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			"transfer_protected": schema.BoolAttribute{
 				MarkdownDescription: "Whether the domain is protected from transfers.",
 				Computed:            true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"nameservers": schema.ListAttribute{
-				MarkdownDescription: "The nameservers for the domain.",
+				MarkdownDescription: "The nameservers for the domain. GoDaddy assigns each account its own pair of GoDaddy nameservers (`*.domaincontrol.com`), so a list of GoDaddy nameservers matches whichever pair GoDaddy assigns. Other nameservers must match exactly (ignoring case, order and a trailing dot).",
 				Optional:            true,
 				Computed:            true,
-				ElementType:         types.StringType,
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
+				},
+				ElementType: types.StringType,
+			},
+			"assigned_nameservers": schema.ListAttribute{
+				MarkdownDescription: "The nameservers GoDaddy reports for the domain. With GoDaddy nameservers this can differ from `nameservers`.",
+				Computed:            true,
+				PlanModifiers: []planmodifier.List{
+					keepAssignedNameservers{},
+				},
+				ElementType: types.StringType,
 			},
 			"contact_admin": schema.SingleNestedAttribute{
 				MarkdownDescription: "Administrative contact information.",
 				Optional:            true,
 				Computed:            true,
-				Attributes:          contactAttributes(),
+				PlanModifiers: []planmodifier.Object{
+					objectplanmodifier.UseStateForUnknown(),
+				},
+				Attributes: contactAttributes(),
 			},
 			"contact_billing": schema.SingleNestedAttribute{
 				MarkdownDescription: "Billing contact information.",
 				Optional:            true,
 				Computed:            true,
-				Attributes:          contactAttributes(),
+				PlanModifiers: []planmodifier.Object{
+					objectplanmodifier.UseStateForUnknown(),
+				},
+				Attributes: contactAttributes(),
 			},
 			"contact_registrant": schema.SingleNestedAttribute{
 				MarkdownDescription: "Registrant contact information.",
 				Optional:            true,
 				Computed:            true,
-				Attributes:          contactAttributes(),
+				PlanModifiers: []planmodifier.Object{
+					objectplanmodifier.UseStateForUnknown(),
+				},
+				Attributes: contactAttributes(),
 			},
 			"contact_tech": schema.SingleNestedAttribute{
 				MarkdownDescription: "Technical contact information.",
 				Optional:            true,
 				Computed:            true,
-				Attributes:          contactAttributes(),
+				PlanModifiers: []planmodifier.Object{
+					objectplanmodifier.UseStateForUnknown(),
+				},
+				Attributes: contactAttributes(),
 			},
 		},
 	}
@@ -221,7 +261,9 @@ func (r *DomainResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
-	// For existing domains, we'll just read the current state
+	// The domain already exists in the account. Apply the planned settings
+	// first, then read the result back. Reading first would overwrite the
+	// plan with the live values, so nothing would be applied.
 	domain, err := r.client.GetDomain(ctx, data.Domain.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -231,10 +273,6 @@ func (r *DomainResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
-	// Update the model with the domain data
-	r.updateModelFromDomain(&data, domain)
-
-	// Apply any configuration changes
 	if err := r.applyDomainSettings(ctx, &data, domain); err != nil {
 		resp.Diagnostics.AddError(
 			"Error Updating Domain Settings",
@@ -242,6 +280,18 @@ func (r *DomainResource) Create(ctx context.Context, req resource.CreateRequest,
 		)
 		return
 	}
+
+	domain, err = r.client.GetDomain(ctx, data.Domain.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error Reading Updated Domain",
+			fmt.Sprintf("Could not read updated domain %s: %s", data.Domain.ValueString(), err),
+		)
+		return
+	}
+
+	r.checkNameserversApplied(&data, domain, &resp.Diagnostics)
+	r.updateModelFromDomain(&data, domain)
 
 	tflog.Trace(ctx, "created domain resource")
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -257,7 +307,7 @@ func (r *DomainResource) Read(ctx context.Context, req resource.ReadRequest, res
 
 	domain, err := r.client.GetDomain(ctx, data.Domain.ValueString())
 	if err != nil {
-		if strings.Contains(err.Error(), "404") {
+		if godaddy.IsNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -307,6 +357,7 @@ func (r *DomainResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
+	r.checkNameserversApplied(&data, domain, &resp.Diagnostics)
 	r.updateModelFromDomain(&data, domain)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -343,13 +394,20 @@ func (r *DomainResource) updateModelFromDomain(model *DomainResourceModel, domai
 	model.RenewAuto = types.BoolValue(domain.RenewAuto)
 	model.TransferProtected = types.BoolValue(domain.TransferProtected)
 
-	// Convert nameservers
+	// Convert nameservers. Keep the configured list when it matches what
+	// GoDaddy reports, so an assigned GoDaddy pair does not show as a diff.
 	if len(domain.Nameservers) > 0 {
 		nameservers := make([]types.String, len(domain.Nameservers))
 		for i, ns := range domain.Nameservers {
 			nameservers[i] = types.StringValue(ns)
 		}
-		model.Nameservers = types.ListValueMust(types.StringType, convertStringsToValues(nameservers))
+		live := types.ListValueMust(types.StringType, convertStringsToValues(nameservers))
+		model.AssignedNameservers = live
+		if want := listStrings(model.Nameservers); len(want) == 0 || !nameserversMatch(want, domain.Nameservers) {
+			model.Nameservers = live
+		}
+	} else {
+		model.AssignedNameservers = types.ListNull(types.StringType)
 	}
 
 	// Convert contacts
@@ -378,11 +436,8 @@ func (r *DomainResource) applyDomainSettings(ctx context.Context, model *DomainR
 	}
 
 	// Check if nameservers need update
-	if !model.Nameservers.IsNull() {
-		var nameservers []string
-		model.Nameservers.ElementsAs(ctx, &nameservers, false)
-
-		if !stringSlicesEqual(nameservers, currentDomain.Nameservers) {
+	if nameservers := listStrings(model.Nameservers); len(nameservers) > 0 {
+		if !nameserversMatch(nameservers, currentDomain.Nameservers) {
 			update.NameServers = nameservers
 			needsUpdate = true
 		}
@@ -406,7 +461,7 @@ func (r *DomainResource) updateContacts(ctx context.Context, model *DomainResour
 	contacts := godaddy.DomainContacts{}
 	needsUpdate := false
 
-	if !model.ContactAdmin.IsNull() {
+	if !model.ContactAdmin.IsNull() && !model.ContactAdmin.IsUnknown() {
 		contact := objectToContact(model.ContactAdmin)
 		if contact != nil && !contactsEqual(*contact, currentDomain.ContactAdmin) {
 			contacts.ContactAdmin = contact
@@ -414,7 +469,7 @@ func (r *DomainResource) updateContacts(ctx context.Context, model *DomainResour
 		}
 	}
 
-	if !model.ContactBilling.IsNull() {
+	if !model.ContactBilling.IsNull() && !model.ContactBilling.IsUnknown() {
 		contact := objectToContact(model.ContactBilling)
 		if contact != nil && !contactsEqual(*contact, currentDomain.ContactBilling) {
 			contacts.ContactBilling = contact
@@ -422,7 +477,7 @@ func (r *DomainResource) updateContacts(ctx context.Context, model *DomainResour
 		}
 	}
 
-	if !model.ContactRegistrant.IsNull() {
+	if !model.ContactRegistrant.IsNull() && !model.ContactRegistrant.IsUnknown() {
 		contact := objectToContact(model.ContactRegistrant)
 		if contact != nil && !contactsEqual(*contact, currentDomain.ContactRegistrant) {
 			contacts.ContactRegistrant = contact
@@ -430,7 +485,7 @@ func (r *DomainResource) updateContacts(ctx context.Context, model *DomainResour
 		}
 	}
 
-	if !model.ContactTech.IsNull() {
+	if !model.ContactTech.IsNull() && !model.ContactTech.IsUnknown() {
 		contact := objectToContact(model.ContactTech)
 		if contact != nil && !contactsEqual(*contact, currentDomain.ContactTech) {
 			contacts.ContactTech = contact
@@ -453,16 +508,109 @@ func convertStringsToValues(strings []types.String) []attr.Value {
 	return values
 }
 
-func stringSlicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
+// keepAssignedNameservers keeps the prior assigned_nameservers in the plan
+// unless the configured nameservers are about to change. Without it, every
+// plan would show assigned_nameservers as "known after apply".
+type keepAssignedNameservers struct{}
+
+func (keepAssignedNameservers) Description(context.Context) string {
+	return "Keeps the prior assigned nameservers unless the nameservers change."
+}
+
+func (m keepAssignedNameservers) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (keepAssignedNameservers) PlanModifyList(ctx context.Context, req planmodifier.ListRequest, resp *planmodifier.ListResponse) {
+	if req.StateValue.IsNull() || !req.PlanValue.IsUnknown() {
+		return
+	}
+
+	var configured types.List
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("nameservers"), &configured)...)
+	if resp.Diagnostics.HasError() || configured.IsUnknown() {
+		return
+	}
+
+	want := listStrings(configured)
+	if len(want) == 0 || nameserversMatch(want, listStrings(req.StateValue)) {
+		resp.PlanValue = req.StateValue
+	}
+}
+
+// goDaddyNameserverSuffix is the domain of GoDaddy's own DNS hosts. GoDaddy
+// assigns each account its own pair (for example ns45 and ns46), so asking
+// for ns1/ns2.domaincontrol.com can leave the domain on a different pair.
+const goDaddyNameserverSuffix = ".domaincontrol.com"
+
+func normalizeNameserver(ns string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(ns), "."))
+}
+
+func isGoDaddyNameserverSet(nameservers []string) bool {
+	if len(nameservers) == 0 {
 		return false
 	}
-	for i := range a {
-		if a[i] != b[i] {
+	for _, ns := range nameservers {
+		if !strings.HasSuffix(normalizeNameserver(ns), goDaddyNameserverSuffix) {
 			return false
 		}
 	}
 	return true
+}
+
+// nameserversMatch reports whether the domain already uses the wanted
+// nameservers: the same set ignoring case, order and a trailing dot, or
+// GoDaddy nameservers on both sides.
+func nameserversMatch(want, have []string) bool {
+	if isGoDaddyNameserverSet(want) && isGoDaddyNameserverSet(have) {
+		return true
+	}
+	if len(want) != len(have) {
+		return false
+	}
+	seen := make(map[string]int, len(want))
+	for _, ns := range want {
+		seen[normalizeNameserver(ns)]++
+	}
+	for _, ns := range have {
+		key := normalizeNameserver(ns)
+		if seen[key] == 0 {
+			return false
+		}
+		seen[key]--
+	}
+	return true
+}
+
+// listStrings returns the known string elements of a list, or nil when the
+// list is null or unknown.
+func listStrings(list types.List) []string {
+	if list.IsNull() || list.IsUnknown() {
+		return nil
+	}
+	var out []string
+	for _, v := range list.Elements() {
+		if s, ok := v.(types.String); ok && !s.IsNull() && !s.IsUnknown() {
+			out = append(out, s.ValueString())
+		}
+	}
+	return out
+}
+
+// checkNameserversApplied reports an error when GoDaddy did not apply the
+// configured nameservers, instead of letting Terraform fail later with an
+// "inconsistent result" message.
+func (r *DomainResource) checkNameserversApplied(model *DomainResourceModel, domain *godaddy.DomainDetail, diags *diag.Diagnostics) {
+	want := listStrings(model.Nameservers)
+	if len(want) == 0 || nameserversMatch(want, domain.Nameservers) {
+		return
+	}
+	diags.AddError(
+		"Nameservers Not Applied",
+		fmt.Sprintf("GoDaddy reports nameservers %v for %s after the update, not the configured %v.",
+			domain.Nameservers, model.Domain.ValueString(), want),
+	)
 }
 
 func contactToObject(contact godaddy.DomainContact) types.Object {
@@ -487,7 +635,9 @@ func contactToObject(contact godaddy.DomainContact) types.Object {
 }
 
 func objectToContact(obj types.Object) *godaddy.DomainContact {
-	if obj.IsNull() {
+	// An unknown object has no attributes. A contact block left out of the
+	// config is unknown in the plan, so this must not index into it.
+	if obj.IsNull() || obj.IsUnknown() {
 		return nil
 	}
 

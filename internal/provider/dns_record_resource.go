@@ -210,7 +210,7 @@ func (r *DNSRecordResource) Create(ctx context.Context, req resource.CreateReque
 	// If we can't check for existing records due to API error (not 404), proceed with creation
 	hasExistingRecords := false
 	if err != nil {
-		if !strings.Contains(err.Error(), "404") {
+		if !godaddy.IsNotFound(err) {
 			tflog.Warn(ctx, "Could not check for existing DNS records, proceeding with creation", map[string]interface{}{
 				"domain": data.Domain.ValueString(),
 				"type":   data.Type.ValueString(),
@@ -297,7 +297,7 @@ func (r *DNSRecordResource) Read(ctx context.Context, req resource.ReadRequest, 
 
 	records, err := r.client.GetDNSRecordsByTypeAndName(ctx, data.Domain.ValueString(), data.Type.ValueString(), data.Name.ValueString())
 	if err != nil {
-		if strings.Contains(err.Error(), "404") {
+		if godaddy.IsNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -338,7 +338,7 @@ func (r *DNSRecordResource) Update(ctx context.Context, req resource.UpdateReque
 	records, err := r.client.GetDNSRecordsByTypeAndName(ctx, data.Domain.ValueString(), data.Type.ValueString(), data.Name.ValueString())
 	if err != nil {
 		// Handle 404 errors with upsert behavior (create if doesn't exist)
-		if strings.Contains(err.Error(), "404") {
+		if godaddy.IsNotFound(err) {
 			tflog.Info(ctx, "DNS record not found during update - creating new record (upsert behavior)", map[string]interface{}{
 				"domain": data.Domain.ValueString(),
 				"type":   data.Type.ValueString(),
@@ -439,7 +439,7 @@ func (r *DNSRecordResource) Delete(ctx context.Context, req resource.DeleteReque
 	// Get all records of this type and name
 	records, err := r.client.GetDNSRecordsByTypeAndName(ctx, data.Domain.ValueString(), data.Type.ValueString(), data.Name.ValueString())
 	if err != nil {
-		if strings.Contains(err.Error(), "404") {
+		if godaddy.IsNotFound(err) {
 			// Already deleted
 			tflog.Debug(ctx, "DNS record already deleted (404)", map[string]interface{}{
 				"domain": data.Domain.ValueString(),
@@ -525,7 +525,7 @@ func (r *DNSRecordResource) Delete(ctx context.Context, req resource.DeleteReque
 	}
 
 	if err != nil {
-		if strings.Contains(err.Error(), "404") {
+		if godaddy.IsNotFound(err) {
 			tflog.Debug(ctx, "DNS record already deleted during final operation (404)")
 		} else {
 			resp.Diagnostics.AddError(

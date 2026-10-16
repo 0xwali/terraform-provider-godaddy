@@ -107,7 +107,7 @@ resource "godaddy_domain" "example" {
 - `privacy` (Boolean) - Whether WHOIS privacy protection is enabled. Default: `false`.
 - `renew_auto` (Boolean) - Whether the domain is set to auto-renew. Default: `true`.
 - `expiration_protected` (Boolean) - Whether the domain is protected from expiration. Default: `true`.
-- `nameservers` (List of String) - Custom nameservers for the domain. If not specified, uses GoDaddy's default nameservers.
+- `nameservers` (List of String) - Nameservers for the domain. If not set, the provider leaves them as they are. A list of GoDaddy nameservers (`*.domaincontrol.com`) matches whichever GoDaddy pair the account gets. See [Nameserver Changes](#nameserver-changes).
 - `contact_admin` (Block) - Administrative contact information. See [contact block](#contact-block) below.
 - `contact_billing` (Block) - Billing contact information. See [contact block](#contact-block) below.
 - `contact_registrant` (Block) - Registrant contact information. See [contact block](#contact-block) below.
@@ -119,6 +119,7 @@ resource "godaddy_domain" "example" {
 - `expires` (String) - Domain expiration date in RFC3339 format.
 - `hold_registrar` (Boolean) - Whether the domain has a registrar hold.
 - `transfer_protected` (Boolean) - Whether the domain is protected from transfers.
+- `assigned_nameservers` (List of String) - The nameservers GoDaddy reports for the domain. With GoDaddy nameservers this can differ from `nameservers`.
 - `created_at` (String) - Domain creation date in RFC3339 format.
 - `modified_at` (String) - Last modification date in RFC3339 format.
 
@@ -167,6 +168,16 @@ If contact information is not provided, the existing contact information from Go
 ### Nameserver Changes
 
 Changing nameservers may affect DNS resolution. Ensure your new nameservers are properly configured before applying changes.
+
+GoDaddy gives each account its own pair of GoDaddy nameservers (hosts ending in
+`domaincontrol.com`, such as `ns45.domaincontrol.com`). If you ask for any GoDaddy
+nameservers, for example `ns1.domaincontrol.com` and `ns2.domaincontrol.com`, GoDaddy puts
+the domain on your account's pair instead. The provider treats that as a match: no error and
+no diff. `assigned_nameservers` shows the pair GoDaddy picked.
+
+Other nameservers, such as Cloudflare's, must match exactly (case, order and a trailing dot do
+not matter). If GoDaddy reports different ones after the update, the apply fails with
+"Nameservers Not Applied".
 
 ### Rate Limiting
 
