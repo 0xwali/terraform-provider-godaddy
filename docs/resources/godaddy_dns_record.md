@@ -159,24 +159,22 @@ resource "godaddy_dns_record" "tlsa" {
 ### Conflict Resolution
 
 ```terraform
-# Overwriting existing DNS records
-resource "godaddy_dns_record" "api_overwrite" {
-  domain         = "example.com"
-  type           = "A"
-  name           = "api"
-  data           = "192.0.2.100"
-  ttl            = 3600
-  allow_overwrite = true  # Will replace any existing A record for api.example.com
+# A second TXT record at @ is added next to the existing ones.
+# Nothing is deleted, and allow_overwrite is not needed.
+resource "godaddy_dns_record" "site_verification" {
+  domain = "example.com"
+  type   = "TXT"
+  name   = "@"
+  data   = "google-site-verification=abc123"
 }
 
-# Safe creation (default behavior)
-resource "godaddy_dns_record" "api_safe" {
-  domain         = "example.com"
-  type           = "A"
-  name           = "api"
-  data           = "192.0.2.101"
-  ttl            = 3600
-  allow_overwrite = false  # Will fail if record already exists (default)
+# Take over a CNAME that already exists with other data.
+resource "godaddy_dns_record" "www" {
+  domain          = "example.com"
+  type            = "CNAME"
+  name            = "www"
+  data            = "app.example.net"
+  allow_overwrite = true # Replaces the existing www CNAME
 }
 ```
 
@@ -231,7 +229,10 @@ resource "godaddy_dns_record" "location" {
 - `port` (Number) - Port number for SRV records. Range: 1-65535. Required for SRV records.
 - `service` (String) - Service name for SRV records (must start with underscore). Required for SRV records.
 - `protocol` (String) - Protocol for SRV records (must start with underscore). Required for SRV records.
-- `allow_overwrite` (Boolean) - Whether to overwrite existing DNS records with the same type and name. Default: `false`. When `false`, creation will fail if a conflicting record exists. When `true`, existing records will be replaced.
+- `allow_overwrite` (Boolean) - Default: `false`. Controls what Create does when records already exist at the same type and name:
+  - A record with the same data exists: with `false`, Create fails and asks you to import it. With `true`, the resource takes over that record and sets its TTL and other fields from the config.
+  - Types that allow several records at one name (TXT, MX, A, AAAA, NS, CAA, SRV and the rest): the new record is added next to the existing ones. Existing records are never deleted.
+  - Types that allow one record per name (CNAME, SOA, DNAME): with `false`, Create fails. With `true`, the existing record is replaced.
 
 ### Read-Only
 
@@ -333,10 +334,18 @@ terraform import godaddy_dns_record.mx "example.com/MX/@/mail.example.com"
 - Each record is managed as a separate Terraform resource
 
 ### Record Conflicts and Overwriting
-- By default, attempting to create a DNS record that conflicts with an existing record will fail
-- Set `allow_overwrite = true` to replace existing records with the same type and name
-- This is useful for migration scenarios or when you need to ensure specific record values
-- Use with caution as it will permanently replace existing DNS data
+- Create never deletes records of a type that allows several records at one name. A new TXT or MX record is added next to the existing ones.
+- Creating a record whose data already exists fails unless `allow_overwrite = true`. Then the resource takes over the existing record.
+- For CNAME, SOA and DNAME, a name holds one record. `allow_overwrite = true` replaces it. Use it with care: it changes live DNS.
+
+### Changes Made Outside Terraform
+- If the record's data changes outside Terraform, the next refresh shows it:
+  - For CNAME, SOA and DNAME, the plan shows the new live value, and apply sets it back.
+  - For other types, the resource is removed from state, and the next apply creates it again. Other records at the same name are left alone.
+
+### Names
+- `name` must be `@` or a name relative to the domain made of letters, digits, `_`, `-`, `*` and `.`. It cannot start with `.` or contain `..`, `/`, `?`, `#`, `%` or spaces.
+- `domain` must be a hostname such as `example.com`.
 
 ### DNS Propagation
 - DNS changes may take time to propagate globally
@@ -358,5 +367,5 @@ Error: Invalid Priority
 Priority must be between 0 and 65535
 
 Error: DNS Record Already Exists
-A DNS record of type A with name "api" already exists for domain "example.com". Set allow_overwrite = true to replace the existing record, or use a different name.
+a CNAME record "www" already exists with data [old.example.com], and a name can hold only one CNAME record. Import it with terraform import, or set allow_overwrite = true to replace it
 ```

@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/bearcode33/terraform-provider-godaddy/internal/godaddy"
@@ -11,9 +10,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
@@ -57,6 +57,9 @@ func (r *DomainResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			"domain": schema.StringAttribute{
 				MarkdownDescription: "The domain name.",
 				Required:            true,
+				Validators: []validator.String{
+					DomainNameValidator(),
+				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -70,32 +73,40 @@ func (r *DomainResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Computed:            true,
 			},
 			"expiration_protected": schema.BoolAttribute{
-				MarkdownDescription: "Whether the domain is protected from expiration.",
+				MarkdownDescription: "Whether the domain is protected from expiration. Read-only in practice: the provider cannot change it, and apply fails if the config asks for a different value. Leave it unset to keep the current value.",
 				Optional:            true,
 				Computed:            true,
-				Default:             booldefault.StaticBool(true),
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"hold_registrar": schema.BoolAttribute{
 				MarkdownDescription: "Whether the domain has a registrar hold.",
 				Computed:            true,
 			},
 			"locked": schema.BoolAttribute{
-				MarkdownDescription: "Whether the domain is locked to prevent transfers.",
+				MarkdownDescription: "Whether the domain is locked to prevent transfers. Leave it unset to keep the current value.",
 				Optional:            true,
 				Computed:            true,
-				Default:             booldefault.StaticBool(true),
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"privacy": schema.BoolAttribute{
-				MarkdownDescription: "Whether WHOIS privacy is enabled.",
+				MarkdownDescription: "Whether WHOIS privacy is enabled. Read-only in practice: the provider cannot change it, and apply fails if the config asks for a different value. Leave it unset to keep the current value.",
 				Optional:            true,
 				Computed:            true,
-				Default:             booldefault.StaticBool(false),
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"renew_auto": schema.BoolAttribute{
-				MarkdownDescription: "Whether the domain is set to auto-renew.",
+				MarkdownDescription: "Whether the domain is set to auto-renew. Leave it unset to keep the current value.",
 				Optional:            true,
 				Computed:            true,
-				Default:             booldefault.StaticBool(true),
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"transfer_protected": schema.BoolAttribute{
 				MarkdownDescription: "Whether the domain is protected from transfers.",
@@ -108,27 +119,31 @@ func (r *DomainResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				ElementType:         types.StringType,
 			},
 			"contact_admin": schema.SingleNestedAttribute{
-				MarkdownDescription: "Administrative contact information.",
+				MarkdownDescription: "Administrative contact information. Marked sensitive because it holds personal data.",
 				Optional:            true,
 				Computed:            true,
+				Sensitive:           true,
 				Attributes:          contactAttributes(),
 			},
 			"contact_billing": schema.SingleNestedAttribute{
-				MarkdownDescription: "Billing contact information.",
+				MarkdownDescription: "Billing contact information. Marked sensitive because it holds personal data.",
 				Optional:            true,
 				Computed:            true,
+				Sensitive:           true,
 				Attributes:          contactAttributes(),
 			},
 			"contact_registrant": schema.SingleNestedAttribute{
-				MarkdownDescription: "Registrant contact information.",
+				MarkdownDescription: "Registrant contact information. Marked sensitive because it holds personal data.",
 				Optional:            true,
 				Computed:            true,
+				Sensitive:           true,
 				Attributes:          contactAttributes(),
 			},
 			"contact_tech": schema.SingleNestedAttribute{
-				MarkdownDescription: "Technical contact information.",
+				MarkdownDescription: "Technical contact information. Marked sensitive because it holds personal data.",
 				Optional:            true,
 				Computed:            true,
+				Sensitive:           true,
 				Attributes:          contactAttributes(),
 			},
 		},
@@ -257,7 +272,7 @@ func (r *DomainResource) Read(ctx context.Context, req resource.ReadRequest, res
 
 	domain, err := r.client.GetDomain(ctx, data.Domain.ValueString())
 	if err != nil {
-		if strings.Contains(err.Error(), "404") {
+		if godaddy.IsNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -286,6 +301,11 @@ func (r *DomainResource) Update(ctx context.Context, req resource.UpdateRequest,
 			"Error Reading Domain",
 			fmt.Sprintf("Could not read domain %s: %s", data.Domain.ValueString(), err),
 		)
+		return
+	}
+
+	if err := checkReadOnlyDomainSettings(&data, domain); err != nil {
+		resp.Diagnostics.AddError("Unsupported Domain Setting", err.Error())
 		return
 	}
 
@@ -400,6 +420,30 @@ func (r *DomainResource) applyDomainSettings(ctx context.Context, model *DomainR
 	}
 
 	return nil
+}
+
+// checkReadOnlyDomainSettings fails when the config asks for a privacy or
+// expiration_protected value the provider cannot set. Before, these were
+// accepted and never sent, so the plan showed the same change forever.
+func checkReadOnlyDomainSettings(model *DomainResourceModel, current *godaddy.DomainDetail) error {
+	if isKnown(model.Privacy) && model.Privacy.ValueBool() != current.Privacy {
+		return fmt.Errorf("privacy is %t on %s, and this provider cannot change it. "+
+			"Change it in the GoDaddy account, or remove privacy from the config", current.Privacy, model.Domain.ValueString())
+	}
+	if isKnown(model.ExpirationProtected) && model.ExpirationProtected.ValueBool() != current.ExpirationProtected {
+		return fmt.Errorf("expiration_protected is %t on %s, and this provider cannot change it. "+
+			"Change it in the GoDaddy account, or remove expiration_protected from the config", current.ExpirationProtected, model.Domain.ValueString())
+	}
+	return nil
+}
+
+type knowable interface {
+	IsNull() bool
+	IsUnknown() bool
+}
+
+func isKnown(v knowable) bool {
+	return !v.IsNull() && !v.IsUnknown()
 }
 
 func (r *DomainResource) updateContacts(ctx context.Context, model *DomainResourceModel, currentDomain *godaddy.DomainDetail) error {

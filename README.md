@@ -28,7 +28,7 @@ A comprehensive Terraform provider for managing GoDaddy domains and DNS records 
 ### Requirements
 
 - [Terraform](https://www.terraform.io/downloads.html) >= 1.0
-- [Go](https://golang.org/doc/install) >= 1.23 (for development)
+- [Go](https://golang.org/doc/install) >= 1.26 (for development)
 - GoDaddy API credentials ([Get them here](https://developer.godaddy.com/keys))
 
 ### Installation
@@ -92,14 +92,9 @@ export GODADDY_ENVIRONMENT="production"  # or "test" for OTE
 resource "godaddy_domain" "example" {
   domain = "example.com"
   
-  # Security settings
-  locked              = true   # Prevent unauthorized transfers
-  privacy             = false  # WHOIS privacy
-  transfer_protected  = true   # Transfer lock
-  
-  # Renewal settings
-  renew_auto          = true   # Auto-renewal
-  expiration_protected = true  # Expiration protection
+  # Set only what you want to change. Unset settings keep their current value.
+  locked     = true # Prevent unauthorized transfers
+  renew_auto = true # Auto-renewal
   
   # Custom nameservers
   nameservers = [
@@ -274,10 +269,10 @@ Manages a GoDaddy domain configuration.
 #### Arguments
 
 - `domain` (Required) - The domain name
-- `locked` (Optional) - Lock domain to prevent transfers (default: true)
-- `privacy` (Optional) - Enable WHOIS privacy (default: false)
-- `renew_auto` (Optional) - Enable auto-renewal (default: true)
-- `expiration_protected` (Optional) - Enable expiration protection (default: true)
+- `locked` (Optional) - Lock domain to prevent transfers. Unset keeps the current value.
+- `renew_auto` (Optional) - Enable auto-renewal. Unset keeps the current value.
+- `privacy` (Optional) - WHOIS privacy. The provider cannot change it: apply fails if the value differs from the live one.
+- `expiration_protected` (Optional) - Expiration protection. The provider cannot change it: apply fails if the value differs from the live one.
 - `nameservers` (Optional) - List of custom nameservers
 - `contact_admin` (Optional) - Administrative contact
 - `contact_billing` (Optional) - Billing contact
@@ -438,6 +433,18 @@ make testacc
 ├── tools/               # Development tools
 └── tests/               # Additional tests
 ```
+
+### Releases
+
+The release workflow signs checksums with the GPG key in the `GPG_PRIVATE_KEY` and
+`PASSPHRASE` secrets. Keep those secrets in the `release` environment, not in
+repository secrets, and protect that environment (Settings > Environments > release):
+
+- Require a reviewer.
+- Allow deployments only from `main` and tags matching `v*`.
+
+Every pull request runs the `Test` workflow: `go mod tidy -diff`, `go vet`,
+`go test -race` and `govulncheck`.
 
 ## Contributing
 

@@ -25,7 +25,6 @@ provider "godaddy" {
 resource "godaddy_domain" "example" {
   domain     = "example.com"
   locked     = true
-  privacy    = false
   renew_auto = true
 }
 
@@ -97,7 +96,7 @@ provider "godaddy" {
 
 ### Optional
 
-- `environment` (String) - GoDaddy API environment. Valid values are `production` (default) and `test`. Can also be set via `GODADDY_ENVIRONMENT` environment variable.
+- `environment` (String) - GoDaddy API environment. Valid values are `production` (default) and `test`, in any case. Any other value is an error, so a typo never sends changes to production. Can also be set via `GODADDY_ENVIRONMENT` environment variable.
 
 ## Environment Support
 

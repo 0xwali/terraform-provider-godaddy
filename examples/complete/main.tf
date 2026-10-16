@@ -24,9 +24,8 @@ resource "godaddy_domain" "example" {
   domain = "example.com"
 
   # Domain settings
-  locked     = true  # Prevent unauthorized transfers
-  privacy    = false # WHOIS privacy protection
-  renew_auto = true  # Auto-renewal
+  locked     = true # Prevent unauthorized transfers
+  renew_auto = true # Auto-renewal
 
   # Custom nameservers (optional)
   nameservers = [

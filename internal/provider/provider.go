@@ -5,13 +5,16 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strings"
 
 	"github.com/bearcode33/terraform-provider-godaddy/internal/godaddy"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -55,6 +58,9 @@ func (p *GoDaddyProvider) Schema(ctx context.Context, req provider.SchemaRequest
 			"environment": schema.StringAttribute{
 				MarkdownDescription: "GoDaddy API environment. Valid values are 'production' (default) and 'test'. Can also be set via GODADDY_ENVIRONMENT environment variable.",
 				Optional:            true,
+				Validators: []validator.String{
+					EnvironmentValidator(),
+				},
 			},
 		},
 	}
@@ -85,6 +91,9 @@ func (p *GoDaddyProvider) Configure(ctx context.Context, req provider.ConfigureR
 		environment = data.Environment.ValueString()
 	}
 
+	apiKey = strings.TrimSpace(apiKey)
+	apiSecret = strings.TrimSpace(apiSecret)
+
 	// Validate required fields
 	if apiKey == "" {
 		resp.Diagnostics.AddError(
@@ -106,9 +115,16 @@ func (p *GoDaddyProvider) Configure(ctx context.Context, req provider.ConfigureR
 		return
 	}
 
-	// Create GoDaddy client
+	// Create GoDaddy client. An unknown environment is an error, so a typo
+	// such as "staging" or "ote" never sends test changes to production.
+	useTest, err := parseEnvironment(environment)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Environment", err.Error())
+		return
+	}
+
 	var opts []godaddy.ClientOption
-	if environment == "test" {
+	if useTest {
 		opts = append(opts, godaddy.WithTestEnvironment())
 	}
 
@@ -137,4 +153,39 @@ func New(version string) func() provider.Provider {
 			version: version,
 		}
 	}
+}
+
+// parseEnvironment maps the environment setting to the API to call. Empty
+// means production. Matching ignores case and surrounding spaces.
+func parseEnvironment(environment string) (useTest bool, err error) {
+	switch strings.ToLower(strings.TrimSpace(environment)) {
+	case "", "production":
+		return false, nil
+	case "test":
+		return true, nil
+	}
+	return false, fmt.Errorf("environment %q is not valid: use \"production\" or \"test\" (set in the provider block or GODADDY_ENVIRONMENT)", environment)
+}
+
+type environmentValidator struct{}
+
+func (v environmentValidator) Description(ctx context.Context) string {
+	return "validates the GoDaddy API environment"
+}
+
+func (v environmentValidator) MarkdownDescription(ctx context.Context) string {
+	return "Validates that the value is `production` or `test`"
+}
+
+func (v environmentValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	if _, err := parseEnvironment(req.ConfigValue.ValueString()); err != nil {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid Environment", err.Error())
+	}
+}
+
+func EnvironmentValidator() validator.String {
+	return environmentValidator{}
 }

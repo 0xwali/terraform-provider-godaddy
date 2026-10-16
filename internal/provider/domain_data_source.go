@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -48,6 +49,9 @@ func (d *DomainDataSource) Schema(ctx context.Context, req datasource.SchemaRequ
 			"domain": schema.StringAttribute{
 				MarkdownDescription: "The domain name to look up.",
 				Required:            true,
+				Validators: []validator.String{
+					DomainNameValidator(),
+				},
 			},
 			"status": schema.StringAttribute{
 				MarkdownDescription: "The current status of the domain.",
