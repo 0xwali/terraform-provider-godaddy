@@ -17,7 +17,7 @@ DOMAIN=""
 RESOURCE_TYPE=""
 API_KEY=""
 API_SECRET=""
-ENVIRONMENT="production"
+ENVIRONMENT=""
 
 usage() {
     echo "Usage: $0 [OPTIONS]"
@@ -25,17 +25,16 @@ usage() {
     echo "Options:"
     echo "  -d, --domain DOMAIN          Domain name (required)"
     echo "  -t, --type TYPE             Resource type: dns_record, domain (default: dns_record)"
-    echo "  -k, --api-key KEY           GoDaddy API Key"
-    echo "  -s, --api-secret SECRET     GoDaddy API Secret"
+    echo "  -k, --api-key KEY           GoDaddy API Key (not recommended: visible in ps and shell history)"
+    echo "  -s, --api-secret SECRET     GoDaddy API Secret (not recommended: visible in ps and shell history)"
     echo "  -e, --environment ENV       Environment: production, test (default: production)"
     echo "  -h, --help                  Show this help"
     echo ""
     echo "Examples:"
     echo "  $0 -d example.com                           # List all DNS records for example.com"
     echo "  $0 -d example.com -t domain                 # Import domain example.com"
-    echo "  $0 -d example.com -k YOUR_KEY -s YOUR_SECRET"
     echo ""
-    echo "Environment variables:"
+    echo "Environment variables (preferred for credentials):"
     echo "  GODADDY_API_KEY             GoDaddy API Key"
     echo "  GODADDY_API_SECRET          GoDaddy API Secret"
     echo "  GODADDY_ENVIRONMENT         Environment (production/test)"
@@ -92,6 +91,41 @@ setup_credentials() {
         log_error "API credentials are required. Set GODADDY_API_KEY and GODADDY_API_SECRET environment variables or use -k and -s options."
         exit 1
     fi
+
+    if [[ "$ENVIRONMENT" != "production" && "$ENVIRONMENT" != "test" ]]; then
+        log_error "Environment must be production or test, got: $ENVIRONMENT"
+        exit 1
+    fi
+}
+
+# api_get PATH prints the JSON body of GET <api>/PATH. The Authorization
+# header goes to curl on stdin (curl --config -), so the key and secret never
+# appear on a command line where ps or shell history could show them.
+api_get() {
+    local path="$1"
+    local key="${API_KEY//\\/\\\\}"
+    key="${key//\"/\\\"}"
+    local secret="${API_SECRET//\\/\\\\}"
+    secret="${secret//\"/\\\"}"
+    printf 'header = "Authorization: sso-key %s:%s"\n' "$key" "$secret" |
+        curl -sS --fail-with-body --proto '=https' --max-redirs 0 --max-time 30 \
+            --config - \
+            -H "Accept: application/json" \
+            "$(get_api_url)/$path"
+}
+
+# resource_label turns a record name and type into a valid Terraform
+# resource name: lowercase letters, digits and underscores only.
+resource_label() {
+    local label
+    label=$(printf '%s_%s' "$1" "$2" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_' '_' | sed 's/__*/_/g; s/^_//; s/_$//')
+    if [[ -z "$label" || "$label" == "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" ]]; then
+        label="root_$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+    fi
+    if [[ "$label" =~ ^[0-9] ]]; then
+        label="r_$label"
+    fi
+    printf '%s' "$label"
 }
 
 get_api_url() {
@@ -104,17 +138,12 @@ get_api_url() {
 
 list_dns_records() {
     local domain="$1"
-    local api_url=$(get_api_url)
-    
+    local response
+
     log_info "Fetching DNS records for domain: $domain"
-    
-    local response=$(curl -s -X GET \
-        -H "Authorization: sso-key $API_KEY:$API_SECRET" \
-        -H "Content-Type: application/json" \
-        "$api_url/domains/$domain/records")
-    
-    if [[ $? -ne 0 ]]; then
-        log_error "Failed to fetch DNS records"
+
+    if ! response=$(api_get "domains/$domain/records"); then
+        log_error "Failed to fetch DNS records: $response"
         return 1
     fi
     
@@ -150,28 +179,18 @@ list_dns_records() {
     echo "# Suggested import commands:"
     echo "$response" | jq -r '.[] | [.type, .name, .data] | @tsv' | \
     while IFS=$'\t' read -r type name data; do
-        # Generate a safe resource name
-        resource_name=$(echo "${name}_${type}" | tr '[:upper:]' '[:lower:]' | tr -d '.-@*' | sed 's/__*/_/g' | sed 's/^_//' | sed 's/_$//')
-        if [[ "$resource_name" == "" ]]; then
-            resource_name="root_${type,,}"
-        fi
-        echo "# terraform import godaddy_dns_record.$resource_name \"$domain/$type/$name/$data\""
+        echo "# terraform import godaddy_dns_record.$(resource_label "$name" "$type") \"$domain/$type/$name/$data\""
     done
 }
 
 get_domain_info() {
     local domain="$1"
-    local api_url=$(get_api_url)
-    
+    local response
+
     log_info "Fetching domain information for: $domain"
-    
-    local response=$(curl -s -X GET \
-        -H "Authorization: sso-key $API_KEY:$API_SECRET" \
-        -H "Content-Type: application/json" \
-        "$api_url/domains/$domain")
-    
-    if [[ $? -ne 0 ]]; then
-        log_error "Failed to fetch domain information"
+
+    if ! response=$(api_get "domains/$domain"); then
+        log_error "Failed to fetch domain information: $response"
         return 1
     fi
     
@@ -207,20 +226,15 @@ generate_terraform_config() {
     
     log_info "Generating Terraform configuration for domain: $domain"
     
-    # Get domain info
-    local domain_response=$(curl -s -X GET \
-        -H "Authorization: sso-key $API_KEY:$API_SECRET" \
-        -H "Content-Type: application/json" \
-        "$(get_api_url)/domains/$domain")
-    
-    # Get DNS records
-    local dns_response=$(curl -s -X GET \
-        -H "Authorization: sso-key $API_KEY:$API_SECRET" \
-        -H "Content-Type: application/json" \
-        "$(get_api_url)/domains/$domain/records")
-    
-    if echo "$domain_response" | jq -e '.code' > /dev/null 2>&1; then
-        log_error "Failed to fetch domain information"
+    local domain_response dns_response
+
+    if ! domain_response=$(api_get "domains/$domain"); then
+        log_error "Failed to fetch domain information: $domain_response"
+        return 1
+    fi
+
+    if ! dns_response=$(api_get "domains/$domain/records"); then
+        log_error "Failed to fetch DNS records: $dns_response"
         return 1
     fi
     
@@ -245,11 +259,10 @@ provider "godaddy" {
 }
 
 # Domain resource
-resource "godaddy_domain" "$(echo "$domain" | tr '.' '_')" {
-  domain = "$domain"
-  locked = $(echo "$domain_response" | jq '.locked')
-  privacy = $(echo "$domain_response" | jq '.privacy')
-  renew_auto = $(echo "$domain_response" | jq '.renewAuto')
+resource "godaddy_domain" "$(echo "$domain" | tr '.-' '__')" {
+  domain     = "$domain"
+  locked     = $(echo "$domain_response" | jq '.locked == true')
+  renew_auto = $(echo "$domain_response" | jq '.renewAuto == true')
 }
 
 EOF
@@ -257,37 +270,27 @@ EOF
     # Add DNS records if available
     if ! echo "$dns_response" | jq -e '.code' > /dev/null 2>&1; then
         echo "# DNS Records" >> "$output_file"
-        echo "$dns_response" | jq -r '.[] | [.type, .name, .data, .ttl, (.priority // ""), (.port // ""), (.weight // "")] | @tsv' | \
-        while IFS=$'\t' read -r type name data ttl priority port weight; do
-            resource_name=$(echo "${name}_${type}" | tr '[:upper:]' '[:lower:]' | tr -d '.-@*' | sed 's/__*/_/g' | sed 's/^_//' | sed 's/_$//')
-            if [[ "$resource_name" == "" ]]; then
-                resource_name="root_${type,,}"
-            fi
-            
-            cat >> "$output_file" << EOF
-
-resource "godaddy_dns_record" "$resource_name" {
-  domain = "$domain"
-  type   = "$type"
-  name   = "$name"
-  data   = "$data"
-  ttl    = $ttl
-EOF
-            
-            if [[ -n "$priority" && "$priority" != "null" ]]; then
-                echo "  priority = $priority" >> "$output_file"
-            fi
-            
-            if [[ -n "$port" && "$port" != "null" ]]; then
-                echo "  port = $port" >> "$output_file"
-            fi
-            
-            if [[ -n "$weight" && "$weight" != "null" ]]; then
-                echo "  weight = $weight" >> "$output_file"
-            fi
-            
-            echo "}" >> "$output_file"
-        done
+        # Values come from the API. jq writes each string as a JSON string
+        # (the same escapes HCL uses) and doubles $ and % before { so a
+        # record cannot close the string or start an HCL template. Numbers
+        # are written only when they are numbers.
+        echo "$dns_response" | jq -r --arg domain "$domain" '
+            def hcl: tostring | tojson | gsub("\\$\\{"; "$${") | gsub("%\\{"; "%%{");
+            def rlabel:
+                ((.name + "_" + .type) | ascii_downcase | gsub("[^a-z0-9_]"; "_") | gsub("_+"; "_")
+                    | ltrimstr("_") | rtrimstr("_")) as $l
+                | (.type | ascii_downcase) as $t
+                | (if $l == "" or $l == $t then "root_" + $t else $l end)
+                | if test("^[0-9]") then "r_" + . else . end;
+            def num($key): if (.[$key] | type) == "number" then "  \($key) = \(.[$key])\n" else "" end;
+            .[] |
+            "\nresource \"godaddy_dns_record\" \"\(rlabel)\" {\n" +
+            "  domain = \($domain | hcl)\n" +
+            "  type   = \(.type | hcl)\n" +
+            "  name   = \(.name | hcl)\n" +
+            "  data   = \(.data | hcl)\n" +
+            num("ttl") + num("priority") + num("port") + num("weight") +
+            "}"' >> "$output_file"
     fi
     
     log_success "Terraform configuration generated: $output_file"
@@ -311,10 +314,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         -k|--api-key)
             API_KEY="$2"
+            log_warning "-k puts the API key in ps output and shell history. Prefer GODADDY_API_KEY."
             shift 2
             ;;
         -s|--api-secret)
             API_SECRET="$2"
+            log_warning "-s puts the API secret in ps output and shell history. Prefer GODADDY_API_SECRET."
             shift 2
             ;;
         -e|--environment)
@@ -337,6 +342,12 @@ done
 if [[ -z "$DOMAIN" ]]; then
     log_error "Domain is required"
     usage
+    exit 1
+fi
+
+# The domain goes into API URLs and the generated file.
+if [[ ! "$DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]]; then
+    log_error "Domain must be a hostname such as example.com, got: $DOMAIN"
     exit 1
 fi
 

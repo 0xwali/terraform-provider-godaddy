@@ -10,8 +10,10 @@ terraform {
 # Configure the provider
 provider "godaddy" {
   # API credentials can be set here or via environment variables:
-  # GODADDY_API_KEY and GODADDY_API_SECRET
+  # GODADDY_API_TOKEN (Personal Access Token), or GODADDY_API_KEY and GODADDY_API_SECRET
 
+  # api_token  = var.godaddy_api_token
+  # or
   # api_key    = var.godaddy_api_key
   # api_secret = var.godaddy_api_secret
 
@@ -24,9 +26,8 @@ resource "godaddy_domain" "example" {
   domain = "example.com"
 
   # Domain settings
-  locked     = true  # Prevent unauthorized transfers
-  privacy    = false # WHOIS privacy protection
-  renew_auto = true  # Auto-renewal
+  locked     = true # Prevent unauthorized transfers
+  renew_auto = true # Auto-renewal
 
   # Custom nameservers (optional)
   nameservers = [

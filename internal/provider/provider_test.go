@@ -23,8 +23,11 @@ var testAccProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServe
 }
 
 func testAccPreCheck(t *testing.T) {
+	if v := os.Getenv("GODADDY_API_TOKEN"); v != "" {
+		return
+	}
 	if v := os.Getenv("GODADDY_API_KEY"); v == "" {
-		t.Skip("GODADDY_API_KEY must be set for acceptance tests")
+		t.Skip("GODADDY_API_TOKEN, or GODADDY_API_KEY and GODADDY_API_SECRET, must be set for acceptance tests")
 	}
 	if v := os.Getenv("GODADDY_API_SECRET"); v == "" {
 		t.Skip("GODADDY_API_SECRET must be set for acceptance tests")

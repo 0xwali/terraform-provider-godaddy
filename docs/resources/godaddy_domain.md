@@ -10,9 +10,8 @@ Manages a GoDaddy domain configuration including settings, nameservers, and cont
 resource "godaddy_domain" "example" {
   domain = "example.com"
   
-  # Security settings
+  # Set only what you want to change. Unset settings keep their current value.
   locked     = true
-  privacy    = false
   renew_auto = true
 }
 ```
@@ -24,10 +23,8 @@ resource "godaddy_domain" "example" {
   domain = "example.com"
   
   # Domain settings
-  locked              = true
-  privacy             = false
-  renew_auto          = true
-  expiration_protected = true
+  locked     = true
+  renew_auto = true
   
   # Custom nameservers
   nameservers = [
@@ -103,15 +100,15 @@ resource "godaddy_domain" "example" {
 
 ### Optional
 
-- `locked` (Boolean) - Whether the domain is locked to prevent unauthorized transfers. Default: `true`.
-- `privacy` (Boolean) - Whether WHOIS privacy protection is enabled. Default: `false`.
-- `renew_auto` (Boolean) - Whether the domain is set to auto-renew. Default: `true`.
-- `expiration_protected` (Boolean) - Whether the domain is protected from expiration. Default: `true`.
-- `nameservers` (List of String) - Custom nameservers for the domain. If not specified, uses GoDaddy's default nameservers.
-- `contact_admin` (Block) - Administrative contact information. See [contact block](#contact-block) below.
-- `contact_billing` (Block) - Billing contact information. See [contact block](#contact-block) below.
-- `contact_registrant` (Block) - Registrant contact information. See [contact block](#contact-block) below.
-- `contact_tech` (Block) - Technical contact information. See [contact block](#contact-block) below.
+- `locked` (Boolean) - Whether the domain is locked to prevent unauthorized transfers. No default: if unset, the provider keeps the current value.
+- `renew_auto` (Boolean) - Whether the domain is set to auto-renew. No default: if unset, the provider keeps the current value.
+- `privacy` (Boolean) - Whether WHOIS privacy protection is enabled. The provider reads it but cannot change it. If the config sets a value that differs from the live one, apply fails with an error. Leave it unset.
+- `expiration_protected` (Boolean) - Whether the domain is protected from expiration. The provider reads it but cannot change it, the same as `privacy`. Leave it unset.
+- `nameservers` (List of String) - Nameservers for the domain. If not set, the provider leaves them as they are. A list of GoDaddy nameservers (`*.domaincontrol.com`) matches whichever GoDaddy pair the account gets. See [Nameserver Changes](#nameserver-changes).
+- `contact_admin` (Block, Sensitive) - Administrative contact information. See [contact block](#contact-block) below.
+- `contact_billing` (Block, Sensitive) - Billing contact information. See [contact block](#contact-block) below.
+- `contact_registrant` (Block, Sensitive) - Registrant contact information. See [contact block](#contact-block) below.
+- `contact_tech` (Block, Sensitive) - Technical contact information. See [contact block](#contact-block) below.
 
 ### Read-Only
 
@@ -119,6 +116,7 @@ resource "godaddy_domain" "example" {
 - `expires` (String) - Domain expiration date in RFC3339 format.
 - `hold_registrar` (Boolean) - Whether the domain has a registrar hold.
 - `transfer_protected` (Boolean) - Whether the domain is protected from transfers.
+- `assigned_nameservers` (List of String) - The nameservers GoDaddy reports for the domain. With GoDaddy nameservers this can differ from `nameservers`.
 - `created_at` (String) - Domain creation date in RFC3339 format.
 - `modified_at` (String) - Last modification date in RFC3339 format.
 
@@ -167,6 +165,24 @@ If contact information is not provided, the existing contact information from Go
 ### Nameserver Changes
 
 Changing nameservers may affect DNS resolution. Ensure your new nameservers are properly configured before applying changes.
+
+GoDaddy picks the GoDaddy nameservers (hosts ending in `domaincontrol.com`, such as
+`ns45.domaincontrol.com`) itself, and it can pick a new pair each time a domain moves back to
+them. It also rejects hosts it does not run, such as `ns1.domaincontrol.com`, with
+`422 NAMESERVER_REJECTED`. So:
+
+- Any list of `*.domaincontrol.com` hosts in `nameservers` means "use GoDaddy's
+  nameservers". When the domain already uses a GoDaddy pair, that is a match: no error and no
+  diff. `assigned_nameservers` shows the pair GoDaddy picked.
+- When the domain moves back to GoDaddy, the provider sends the pair from the zone's `NS`
+  records at `@` (GoDaddy keeps them while the domain uses other nameservers), not the hosts
+  in your list. GoDaddy then assigns its pair.
+- After `terraform import`, the first plan can show `nameservers` changing from the live pair
+  to your list. Applying it makes no API call; it only saves your list in the state.
+
+Other nameservers, such as Cloudflare's, must match exactly (case, order and a trailing dot do
+not matter). If GoDaddy reports different ones after the update, the apply fails with
+"Nameservers Not Applied".
 
 ### Rate Limiting
 

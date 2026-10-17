@@ -1,7 +1,6 @@
 resource "godaddy_domain" "example" {
   domain     = "example.com"
   locked     = true
-  privacy    = false
   renew_auto = true
 
   nameservers = [
