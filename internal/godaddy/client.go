@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
 // APIError is a non-2xx response from the GoDaddy API.
@@ -41,6 +44,15 @@ type RateLimitResponse struct {
 const (
 	productionURL = "https://api.godaddy.com"
 	testURL       = "https://api.ote-godaddy.com"
+)
+
+const (
+	// maxRetryWait caps the wait a 429 response can ask for, so a bad or
+	// hostile retryAfterSec cannot hang a CI job.
+	maxRetryWait = 60 * time.Second
+	// maxErrorBodyBytes limits how much of an error response is read and
+	// echoed back in error messages.
+	maxErrorBodyBytes = 64 << 10
 )
 
 type Client struct {
@@ -77,14 +89,21 @@ func NewClient(apiKey, apiSecret string, opts ...ClientOption) *Client {
 			Timeout: 30 * time.Second,
 		},
 		baseURL:               productionURL,
-		apiKey:                apiKey,
-		apiSecret:             apiSecret,
+		apiKey:                strings.TrimSpace(apiKey),
+		apiSecret:             strings.TrimSpace(apiSecret),
 		operationPollInterval: 2 * time.Second,
 		operationTimeout:      10 * time.Minute,
 	}
 
 	for _, opt := range opts {
 		opt(client)
+	}
+
+	// The GoDaddy API does not redirect. Go's default policy would follow a
+	// redirect and resend the Authorization header to the same host even over
+	// plain http, so refuse every redirect instead.
+	if client.httpClient.CheckRedirect == nil {
+		client.httpClient.CheckRedirect = refuseRedirect
 	}
 
 	return client
@@ -96,6 +115,14 @@ func NewTokenClient(apiToken string, opts ...ClientOption) *Client {
 	client := NewClient("", "", opts...)
 	client.apiToken = strings.TrimSpace(apiToken)
 	return client
+}
+
+func refuseRedirect(req *http.Request, via []*http.Request) error {
+	status := 0
+	if req.Response != nil {
+		status = req.Response.StatusCode
+	}
+	return fmt.Errorf("refusing to follow redirect (status %d) to %s: the GoDaddy API does not redirect", status, req.URL.Redacted())
 }
 
 // UsesAPIToken reports whether the client authenticates with a PAT.
@@ -120,7 +147,7 @@ func (c *Client) doRequestWithHeaders(ctx context.Context, method, path string, 
 
 func (c *Client) doRequestWithRetry(ctx context.Context, method, path string, body interface{}, headers map[string]string, retryCount int) (*http.Response, error) {
 	const maxRetries = 3
-	
+
 	var bodyReader io.Reader
 	if body != nil {
 		jsonBody, err := json.Marshal(body)
@@ -149,49 +176,57 @@ func (c *Client) doRequestWithRetry(ctx context.Context, method, path string, bo
 
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+
 		// Handle rate limiting with intelligent retry
 		if resp.StatusCode == 429 && retryCount < maxRetries {
-			fmt.Printf("RATE LIMIT HIT: %s %s - Status: %d, Body: %s (Retry %d/%d)\n",
-				req.Method, req.URL.Path, resp.StatusCode, string(bodyBytes), retryCount+1, maxRetries)
-			
-			// Parse retryAfterSec from response body
-			waitTime := c.parseRetryAfter(bodyBytes)
-			if waitTime > 0 {
-				fmt.Printf("Waiting %d seconds before retry as specified by GoDaddy API\n", waitTime)
-				select {
-				case <-time.After(time.Duration(waitTime) * time.Second):
-					// Continue with retry
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				}
-			} else {
-				// Fallback exponential backoff if retryAfterSec not found
-				backoffTime := time.Duration(1<<uint(retryCount)) * time.Second
-				fmt.Printf("Using exponential backoff: waiting %v before retry\n", backoffTime)
-				select {
-				case <-time.After(backoffTime):
-					// Continue with retry
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				}
+			wait := retryWait(c.parseRetryAfter(bodyBytes), retryCount)
+			tflog.Warn(ctx, "GoDaddy API rate limit hit, retrying", map[string]interface{}{
+				"method":  req.Method,
+				"path":    req.URL.Path,
+				"retry":   retryCount + 1,
+				"retries": maxRetries,
+				"wait":    wait.String(),
+			})
+
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return nil, ctx.Err()
 			}
-			
-			// Recursive retry
+
 			return c.doRequestWithRetry(ctx, method, path, body, headers, retryCount+1)
 		}
-		
-		// DIAGNOSTIC LOG for non-429 errors or max retries reached
+
 		if resp.StatusCode == 429 {
-			fmt.Printf("RATE LIMIT EXHAUSTED: Max retries (%d) reached for %s %s\n",
-				maxRetries, req.Method, req.URL.Path)
+			tflog.Warn(ctx, "GoDaddy API rate limit retries exhausted", map[string]interface{}{
+				"method":  req.Method,
+				"path":    req.URL.Path,
+				"retries": maxRetries,
+			})
 		}
-		
+
 		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
 	}
 
 	return resp, nil
+}
+
+// retryWait returns how long to wait before retry number retryCount+1: the
+// server's retryAfterSec when it gave one, otherwise exponential backoff,
+// never more than maxRetryWait.
+func retryWait(retryAfterSec, retryCount int) time.Duration {
+	if retryAfterSec > int(maxRetryWait/time.Second) {
+		return maxRetryWait
+	}
+	if retryAfterSec > 0 {
+		return time.Duration(retryAfterSec) * time.Second
+	}
+	wait := time.Duration(1<<uint(retryCount)) * time.Second
+	if wait > maxRetryWait || wait <= 0 {
+		wait = maxRetryWait
+	}
+	return wait
 }
 
 // parseRetryAfter extracts retryAfterSec from GoDaddy's rate limit response
@@ -283,4 +318,11 @@ func (c *Client) Delete(ctx context.Context, path string) error {
 	defer resp.Body.Close()
 
 	return nil
+}
+
+// pathSegment escapes a user value for one URL path segment, so a domain or
+// record name cannot add segments ("../", "/"), a query ("?") or a fragment
+// ("#") to the request. '*' stays literal because wildcard record names use it.
+func pathSegment(value string) string {
+	return strings.ReplaceAll(url.PathEscape(value), "%2A", "*")
 }

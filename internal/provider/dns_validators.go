@@ -3,6 +3,8 @@ package provider
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/bearcode33/terraform-provider-godaddy/internal/godaddy"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -216,4 +218,87 @@ func (w weightValidator) ValidateInt32(ctx context.Context, req validator.Int32R
 
 func WeightValidator() validator.Int32 {
 	return weightValidator{}
+}
+
+var (
+	hostnameLabel  = `[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?`
+	domainNameRe   = regexp.MustCompile(`^` + hostnameLabel + `(?:\.` + hostnameLabel + `)+$`)
+	recordNameRe   = regexp.MustCompile(`^[a-zA-Z0-9_*.-]+$`)
+	maxDomainChars = 253
+)
+
+// ValidateDomainName checks that domain is a plain hostname such as
+// example.com. The value goes into API URL paths, so anything else is
+// rejected before a request is made.
+func ValidateDomainName(domain string) error {
+	if len(domain) > maxDomainChars || !domainNameRe.MatchString(domain) {
+		return fmt.Errorf("%q is not a valid domain name (expected a hostname such as example.com)", domain)
+	}
+	return nil
+}
+
+// ValidateRecordName checks a DNS record name relative to the domain: "@"
+// for the apex, or labels made of letters, digits, '_', '-', '*' and '.'.
+// The value goes into API URL paths, so '/', '?', '#', '%', spaces and ".."
+// are rejected.
+func ValidateRecordName(name string) error {
+	switch {
+	case name == "":
+		return fmt.Errorf("record name cannot be empty; use @ for the root domain")
+	case name == "@":
+		return nil
+	case strings.HasPrefix(name, "."):
+		return fmt.Errorf("record name %q cannot start with '.'", name)
+	case strings.Contains(name, ".."):
+		return fmt.Errorf("record name %q cannot contain '..'", name)
+	case !recordNameRe.MatchString(name):
+		return fmt.Errorf("record name %q may only contain letters, digits, '_', '-', '*' and '.', or be @", name)
+	}
+	return nil
+}
+
+type domainNameValidator struct{}
+
+func (v domainNameValidator) Description(ctx context.Context) string {
+	return "validates a domain name"
+}
+
+func (v domainNameValidator) MarkdownDescription(ctx context.Context) string {
+	return "Validates that the value is a hostname such as `example.com`"
+}
+
+func (v domainNameValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	if err := ValidateDomainName(req.ConfigValue.ValueString()); err != nil {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid Domain Name", err.Error())
+	}
+}
+
+func DomainNameValidator() validator.String {
+	return domainNameValidator{}
+}
+
+type recordNameValidator struct{}
+
+func (v recordNameValidator) Description(ctx context.Context) string {
+	return "validates a DNS record name"
+}
+
+func (v recordNameValidator) MarkdownDescription(ctx context.Context) string {
+	return "Validates that the value is `@` or a DNS name relative to the domain"
+}
+
+func (v recordNameValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	if err := ValidateRecordName(req.ConfigValue.ValueString()); err != nil {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid Record Name", err.Error())
+	}
+}
+
+func DNSRecordNameValidator() validator.String {
+	return recordNameValidator{}
 }

@@ -22,7 +22,6 @@ type Domain struct {
 
 type DomainDetail struct {
 	Domain
-	AuthCode               string        `json:"authCode,omitempty"`
 	ContactAdmin           DomainContact `json:"contactAdmin"`
 	ContactBilling         DomainContact `json:"contactBilling"`
 	ContactRegistrant      DomainContact `json:"contactRegistrant"`

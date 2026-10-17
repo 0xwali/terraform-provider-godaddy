@@ -3,6 +3,7 @@ package godaddy
 import (
 	"context"
 	"fmt"
+	"net/url"
 )
 
 func (c *Client) GetDomain(ctx context.Context, domain string) (*DomainDetail, error) {
@@ -18,7 +19,7 @@ func (c *Client) GetDomain(ctx context.Context, domain string) (*DomainDetail, e
 	}
 
 	var result DomainDetail
-	err := c.Get(ctx, fmt.Sprintf("/v1/domains/%s", domain), &result)
+	err := c.Get(ctx, fmt.Sprintf("/v1/domains/%s", pathSegment(domain)), &result)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get domain %s: %w", domain, err)
 	}
@@ -53,7 +54,7 @@ func (c *Client) UpdateDomain(ctx context.Context, domain string, update DomainU
 		return nil
 	}
 
-	err := c.Patch(ctx, fmt.Sprintf("/v1/domains/%s", domain), update)
+	err := c.Patch(ctx, fmt.Sprintf("/v1/domains/%s", pathSegment(domain)), update)
 	if err != nil {
 		return fmt.Errorf("failed to update domain %s: %w", domain, err)
 	}
@@ -62,7 +63,7 @@ func (c *Client) UpdateDomain(ctx context.Context, domain string, update DomainU
 
 func (c *Client) CheckDomainAvailability(ctx context.Context, domain string) (*DomainAvailability, error) {
 	var result DomainAvailability
-	err := c.Get(ctx, fmt.Sprintf("/v1/domains/available?domain=%s", domain), &result)
+	err := c.Get(ctx, "/v1/domains/available?"+url.Values{"domain": {domain}}.Encode(), &result)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check domain availability for %s: %w", domain, err)
 	}
@@ -78,7 +79,7 @@ func (c *Client) PurchaseDomain(ctx context.Context, purchase DomainPurchase) er
 }
 
 func (c *Client) DeleteDomain(ctx context.Context, domain string) error {
-	err := c.Delete(ctx, fmt.Sprintf("/v1/domains/%s", domain))
+	err := c.Delete(ctx, fmt.Sprintf("/v1/domains/%s", pathSegment(domain)))
 	if err != nil {
 		return fmt.Errorf("failed to delete domain %s: %w", domain, err)
 	}
@@ -87,7 +88,7 @@ func (c *Client) DeleteDomain(ctx context.Context, domain string) error {
 
 func (c *Client) GetDomainContacts(ctx context.Context, domain string) (*DomainContactsResponse, error) {
 	var result DomainContactsResponse
-	err := c.Get(ctx, fmt.Sprintf("/v1/domains/%s/contacts", domain), &result)
+	err := c.Get(ctx, fmt.Sprintf("/v1/domains/%s/contacts", pathSegment(domain)), &result)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get domain contacts for %s: %w", domain, err)
 	}
@@ -95,7 +96,7 @@ func (c *Client) GetDomainContacts(ctx context.Context, domain string) (*DomainC
 }
 
 func (c *Client) UpdateDomainContacts(ctx context.Context, domain string, contacts DomainContacts) error {
-	err := c.Patch(ctx, fmt.Sprintf("/v1/domains/%s/contacts", domain), contacts)
+	err := c.Patch(ctx, fmt.Sprintf("/v1/domains/%s/contacts", pathSegment(domain)), contacts)
 	if err != nil {
 		return fmt.Errorf("failed to update domain contacts for %s: %w", domain, err)
 	}

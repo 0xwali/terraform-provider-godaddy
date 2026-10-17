@@ -453,7 +453,7 @@ func TestTokenClient_UnknownOperationStatusStops(t *testing.T) {
 	}
 }
 
-func TestIsNotFound(t *testing.T) {
+func TestIsNotFound_StatusNotBodyText(t *testing.T) {
 	f, server := newFakeGoDaddy(t)
 	f.handle("GET /v1/domains/missing.com", http.StatusNotFound, `{"code":"NOT_FOUND"}`)
 	f.handle("GET /v1/domains/conflict.com", http.StatusConflict, `{"correlationId":"a404b"}`)

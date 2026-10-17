@@ -1,9 +1,8 @@
 version: 2
 
-before:
-  hooks:
-    - go mod tidy
-    - go generate ./...
+# No before hooks. `go mod tidy` would change go.mod during a release, and
+# `go generate ./...` does nothing in this module (the generators live in
+# tools/). The release workflow checks that go.mod is tidy instead.
 
 builds:
   - env:

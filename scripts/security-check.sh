@@ -18,7 +18,9 @@ ISSUES_FOUND=0
 
 # Check for hardcoded API keys
 echo "🔑 Checking for hardcoded API keys..."
-if find . -type f \( -name "*.tf" -o -name "*.go" -o -name "*.md" \) -not -path "./.git/*" -not -path "./.terraform/*" -not -path "./scripts/security-check.sh" | xargs grep -l "gHptB5wGQk9M\|VKUexXpUFQK7Ln2kXNmXsL\|api_key.*=.*\"[a-zA-Z0-9_]{20,}" 2>/dev/null; then
+# Look for credential-shaped literals, not for one specific key. Matching a
+# real key fragment here would publish that fragment.
+if find . -type f \( -name "*.tf" -o -name "*.tfvars" -o -name "*.go" -o -name "*.md" -o -name "*.sh" \) -not -path "./.git/*" -not -path "./.terraform/*" -not -path "./scripts/security-check.sh" -print0 | xargs -0 grep -lE 'sso-key [A-Za-z0-9_]{10,}:[A-Za-z0-9_]{10,}|api_(key|secret|token)[[:space:]]*=[[:space:]]*"[A-Za-z0-9_.-]{16,}"' 2>/dev/null; then
     echo -e "${RED}❌ DANGER: Hardcoded API credentials found!${NC}"
     ISSUES_FOUND=$((ISSUES_FOUND + 1))
 else

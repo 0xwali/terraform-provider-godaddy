@@ -24,7 +24,6 @@ provider "godaddy" {
 resource "godaddy_domain" "example" {
   domain     = "example.com"
   locked     = true
-  privacy    = false
   renew_auto = true
 }
 
@@ -72,16 +71,13 @@ Anything that reads a domain or its records needs `domains.domain:read`. A token
 a scope gets `403 Forbidden` on the calls that need it. Scope names are from
 [GoDaddy's auth docs](https://developer.godaddy.com/docs/api-users/auth).
 
-`locked` and `renew_auto` default to `true`. If the domain has either one off and your
-token has no `domains.domain:update` scope, set them in the resource to the values the
-domain has now. Otherwise the provider tries to change them and gets a 403. For example,
-with a token that only has `domains.domain:read` and `domains.nameserver:update`:
+Only set what the token may change. Unset `locked` and `renew_auto` keep the domain's
+current values, so a token with only `domains.domain:read` and `domains.nameserver:update`
+can manage nameservers:
 
 ```terraform
 resource "godaddy_domain" "example" {
   domain      = "example.com"
-  locked      = false # match the current value
-  renew_auto  = false # match the current value
   nameservers = ["ns1.example-dns.com", "ns2.example-dns.com"]
 }
 ```
@@ -187,7 +183,7 @@ Set `api_token`, or set both `api_key` and `api_secret`.
 
 ### Optional
 
-- `environment` (String) - GoDaddy API environment. Valid values are `production` (default) and `test`. Can also be set via `GODADDY_ENVIRONMENT` environment variable.
+- `environment` (String) - GoDaddy API environment. Valid values are `production` (default) and `test`, in any case. Any other value is an error, so a typo never sends changes to production. Can also be set via `GODADDY_ENVIRONMENT` environment variable.
 
 ## Environment Support
 

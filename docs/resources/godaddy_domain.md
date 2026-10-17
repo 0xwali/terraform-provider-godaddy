@@ -10,9 +10,8 @@ Manages a GoDaddy domain configuration including settings, nameservers, and cont
 resource "godaddy_domain" "example" {
   domain = "example.com"
   
-  # Security settings
+  # Set only what you want to change. Unset settings keep their current value.
   locked     = true
-  privacy    = false
   renew_auto = true
 }
 ```
@@ -24,10 +23,8 @@ resource "godaddy_domain" "example" {
   domain = "example.com"
   
   # Domain settings
-  locked              = true
-  privacy             = false
-  renew_auto          = true
-  expiration_protected = true
+  locked     = true
+  renew_auto = true
   
   # Custom nameservers
   nameservers = [
@@ -103,15 +100,15 @@ resource "godaddy_domain" "example" {
 
 ### Optional
 
-- `locked` (Boolean) - Whether the domain is locked to prevent unauthorized transfers. Default: `true`.
-- `privacy` (Boolean) - Whether WHOIS privacy protection is enabled. Default: `false`.
-- `renew_auto` (Boolean) - Whether the domain is set to auto-renew. Default: `true`.
-- `expiration_protected` (Boolean) - Whether the domain is protected from expiration. Default: `true`.
+- `locked` (Boolean) - Whether the domain is locked to prevent unauthorized transfers. No default: if unset, the provider keeps the current value.
+- `renew_auto` (Boolean) - Whether the domain is set to auto-renew. No default: if unset, the provider keeps the current value.
+- `privacy` (Boolean) - Whether WHOIS privacy protection is enabled. The provider reads it but cannot change it. If the config sets a value that differs from the live one, apply fails with an error. Leave it unset.
+- `expiration_protected` (Boolean) - Whether the domain is protected from expiration. The provider reads it but cannot change it, the same as `privacy`. Leave it unset.
 - `nameservers` (List of String) - Nameservers for the domain. If not set, the provider leaves them as they are. A list of GoDaddy nameservers (`*.domaincontrol.com`) matches whichever GoDaddy pair the account gets. See [Nameserver Changes](#nameserver-changes).
-- `contact_admin` (Block) - Administrative contact information. See [contact block](#contact-block) below.
-- `contact_billing` (Block) - Billing contact information. See [contact block](#contact-block) below.
-- `contact_registrant` (Block) - Registrant contact information. See [contact block](#contact-block) below.
-- `contact_tech` (Block) - Technical contact information. See [contact block](#contact-block) below.
+- `contact_admin` (Block, Sensitive) - Administrative contact information. See [contact block](#contact-block) below.
+- `contact_billing` (Block, Sensitive) - Billing contact information. See [contact block](#contact-block) below.
+- `contact_registrant` (Block, Sensitive) - Registrant contact information. See [contact block](#contact-block) below.
+- `contact_tech` (Block, Sensitive) - Technical contact information. See [contact block](#contact-block) below.
 
 ### Read-Only
 

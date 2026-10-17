@@ -63,6 +63,9 @@ func (r *DNSRecordResource) Schema(ctx context.Context, req resource.SchemaReque
 			"domain": schema.StringAttribute{
 				MarkdownDescription: "The domain name to add the record to.",
 				Required:            true,
+				Validators: []validator.String{
+					DomainNameValidator(),
+				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -80,6 +83,9 @@ func (r *DNSRecordResource) Schema(ctx context.Context, req resource.SchemaReque
 			"name": schema.StringAttribute{
 				MarkdownDescription: "The subdomain name for the record. Use @ for the root domain.",
 				Required:            true,
+				Validators: []validator.String{
+					DNSRecordNameValidator(),
+				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -201,83 +207,60 @@ func (r *DNSRecordResource) Create(ctx context.Context, req resource.CreateReque
 
 	record := r.modelToRecord(&data)
 
-	// Check for existing records to handle allow_overwrite logic
-	existingRecords, err := r.client.GetDNSRecordsByTypeAndName(ctx,
-		data.Domain.ValueString(),
-		data.Type.ValueString(),
-		data.Name.ValueString())
-	
-	// If we can't check for existing records due to API error (not 404), proceed with creation
-	hasExistingRecords := false
-	if err != nil {
-		if !godaddy.IsNotFound(err) {
-			tflog.Warn(ctx, "Could not check for existing DNS records, proceeding with creation", map[string]interface{}{
-				"domain": data.Domain.ValueString(),
-				"type":   data.Type.ValueString(),
-				"name":   data.Name.ValueString(),
-				"error":  err.Error(),
-			})
-		}
-	} else if len(existingRecords) > 0 {
-		hasExistingRecords = true
-		tflog.Debug(ctx, "Found existing DNS records", map[string]interface{}{
-			"domain":      data.Domain.ValueString(),
-			"type":        data.Type.ValueString(),
-			"name":        data.Name.ValueString(),
-			"recordCount": len(existingRecords),
-			"allowOverwrite": data.AllowOverwrite.ValueBool(),
-		})
+	domain := data.Domain.ValueString()
+	recordType := data.Type.ValueString()
+	name := data.Name.ValueString()
+
+	unlock := lockRecordSet(domain, recordType, name)
+	defer unlock()
+
+	// Read the set inside the lock so the decision below uses current data.
+	existingRecords, err := r.client.GetDNSRecordsByTypeAndName(ctx, domain, recordType, name)
+	if err != nil && !godaddy.IsNotFound(err) {
+		resp.Diagnostics.AddError(
+			"Error Reading DNS Records",
+			fmt.Sprintf("Could not check for existing DNS records before creating %s %s: %s", recordType, name, err),
+		)
+		return
 	}
 
-	// Handle conflict resolution
-	if hasExistingRecords {
-		if !data.AllowOverwrite.ValueBool() {
-			// List existing record data for better error message
-			var existingData []string
-			for _, record := range existingRecords {
-				existingData = append(existingData, record.Data)
-			}
-			resp.Diagnostics.AddError(
-				"DNS Record Already Exists",
-				fmt.Sprintf("DNS record %s.%s already exists for domain %s with data: [%s]. "+
-					"Set allow_overwrite = true to replace existing records, or use terraform import to manage existing records.",
-					data.Name.ValueString(), data.Type.ValueString(), data.Domain.ValueString(),
-					strings.Join(existingData, ", ")),
-			)
-			return
-		} else {
-			// Replace existing records with the new one
-			tflog.Info(ctx, "Overwriting existing DNS records due to allow_overwrite = true", map[string]interface{}{
-				"domain":           data.Domain.ValueString(),
-				"type":             data.Type.ValueString(),
-				"name":             data.Name.ValueString(),
-				"existingRecords":  len(existingRecords),
-			})
-			
-			err = r.client.ReplaceDNSRecordsByTypeAndName(ctx,
-				data.Domain.ValueString(),
-				data.Type.ValueString(),
-				data.Name.ValueString(),
-				[]godaddy.DNSRecord{record})
-			if err != nil {
-				resp.Diagnostics.AddError(
-					"Error Overwriting DNS Record",
-					fmt.Sprintf("Could not overwrite existing DNS record: %s", err),
-				)
-				return
+	action, err := planCreate(existingRecords, record, data.AllowOverwrite.ValueBool())
+	if err != nil {
+		resp.Diagnostics.AddError("DNS Record Already Exists", err.Error())
+		return
+	}
+
+	switch action {
+	case createAdd:
+		tflog.Debug(ctx, "Adding DNS record", map[string]interface{}{
+			"domain": domain, "type": recordType, "name": name, "existingRecords": len(existingRecords),
+		})
+		err = r.client.AddDNSRecord(ctx, domain, record)
+	case createAdopt:
+		tflog.Info(ctx, "Adopting existing DNS record with the same data (allow_overwrite = true)", map[string]interface{}{
+			"domain": domain, "type": recordType, "name": name,
+		})
+		records := make([]godaddy.DNSRecord, len(existingRecords))
+		copy(records, existingRecords)
+		for i := range records {
+			if sameRecordData(recordType, records[i].Data, record.Data) {
+				records[i] = record
+				break
 			}
 		}
-	} else {
-		// No existing records, create new one
-		tflog.Debug(ctx, "Creating new DNS record (no conflicts found)")
-		err = r.client.AddDNSRecord(ctx, data.Domain.ValueString(), record)
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"Error Creating DNS Record",
-				fmt.Sprintf("Could not create DNS record: %s", err),
-			)
-			return
-		}
+		err = r.client.ReplaceDNSRecordsByTypeAndName(ctx, domain, recordType, name, records)
+	case createReplace:
+		tflog.Info(ctx, "Replacing existing single-value DNS record (allow_overwrite = true)", map[string]interface{}{
+			"domain": domain, "type": recordType, "name": name,
+		})
+		err = r.client.ReplaceDNSRecordsByTypeAndName(ctx, domain, recordType, name, []godaddy.DNSRecord{record})
+	}
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error Creating DNS Record",
+			fmt.Sprintf("Could not create DNS record: %s", err),
+		)
+		return
 	}
 
 	// Generate ID
@@ -308,18 +291,20 @@ func (r *DNSRecordResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 
-	if len(records) == 0 {
+	// Keeping the old state when nothing matches would hide changes made
+	// outside Terraform. Either show the live record or drop it from state so
+	// the next apply recreates it.
+	record, found := findStoredRecord(records, data.Type.ValueString(), data.Data.ValueString())
+	if !found {
+		tflog.Warn(ctx, "DNS record not found, removing it from state", map[string]interface{}{
+			"domain": data.Domain.ValueString(),
+			"type":   data.Type.ValueString(),
+			"name":   data.Name.ValueString(),
+		})
 		resp.State.RemoveResource(ctx)
 		return
 	}
-
-	// Find the matching record
-	for _, record := range records {
-		if record.Data == data.Data.ValueString() {
-			r.updateModelFromRecord(&data, &record)
-			break
-		}
-	}
+	r.updateModelFromRecord(&data, record)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -333,6 +318,9 @@ func (r *DNSRecordResource) Update(ctx context.Context, req resource.UpdateReque
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	unlock := lockRecordSet(data.Domain.ValueString(), data.Type.ValueString(), data.Name.ValueString())
+	defer unlock()
 
 	// Get all records of this type and name
 	records, err := r.client.GetDNSRecordsByTypeAndName(ctx, data.Domain.ValueString(), data.Type.ValueString(), data.Name.ValueString())
@@ -378,7 +366,7 @@ func (r *DNSRecordResource) Update(ctx context.Context, req resource.UpdateReque
 	// Update the matching record
 	updated := false
 	for i, record := range records {
-		if record.Data == state.Data.ValueString() {
+		if sameRecordData(data.Type.ValueString(), record.Data, state.Data.ValueString()) {
 			// Update this record
 			records[i] = r.modelToRecord(&data)
 			updated = true
@@ -436,6 +424,9 @@ func (r *DNSRecordResource) Delete(ctx context.Context, req resource.DeleteReque
 		return
 	}
 
+	unlock := lockRecordSet(data.Domain.ValueString(), data.Type.ValueString(), data.Name.ValueString())
+	defer unlock()
+
 	// Get all records of this type and name
 	records, err := r.client.GetDNSRecordsByTypeAndName(ctx, data.Domain.ValueString(), data.Type.ValueString(), data.Name.ValueString())
 	if err != nil {
@@ -480,7 +471,7 @@ func (r *DNSRecordResource) Delete(ctx context.Context, req resource.DeleteReque
 	newRecords := make([]godaddy.DNSRecord, 0, len(records))
 	var recordFound bool
 	for _, record := range records {
-		if record.Data != data.Data.ValueString() {
+		if !sameRecordData(data.Type.ValueString(), record.Data, data.Data.ValueString()) {
 			newRecords = append(newRecords, record)
 		} else {
 			recordFound = true
@@ -560,6 +551,15 @@ func (r *DNSRecordResource) ImportState(ctx context.Context, req resource.Import
 	recordType := parts[1]
 	name := parts[2]
 	var data string
+
+	if err := ValidateDomainName(domain); err != nil {
+		resp.Diagnostics.AddError("Invalid Import ID", err.Error())
+		return
+	}
+	if err := ValidateRecordName(name); err != nil {
+		resp.Diagnostics.AddError("Invalid Import ID", err.Error())
+		return
+	}
 
 	if len(parts) == 4 {
 		// Full format provided

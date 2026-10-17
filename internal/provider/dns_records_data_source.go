@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -51,6 +52,9 @@ func (d *DNSRecordsDataSource) Schema(ctx context.Context, req datasource.Schema
 			"domain": schema.StringAttribute{
 				MarkdownDescription: "The domain name to retrieve DNS records for.",
 				Required:            true,
+				Validators: []validator.String{
+					DomainNameValidator(),
+				},
 			},
 			"type": schema.StringAttribute{
 				MarkdownDescription: "Filter by record type (A, AAAA, CNAME, MX, NS, SOA, SRV, TXT, etc.).",
@@ -59,6 +63,9 @@ func (d *DNSRecordsDataSource) Schema(ctx context.Context, req datasource.Schema
 			"name": schema.StringAttribute{
 				MarkdownDescription: "Filter by record name.",
 				Optional:            true,
+				Validators: []validator.String{
+					DNSRecordNameValidator(),
+				},
 			},
 			"records": schema.ListNestedAttribute{
 				MarkdownDescription: "List of DNS records.",

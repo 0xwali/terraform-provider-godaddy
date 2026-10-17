@@ -17,6 +17,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `assigned_nameservers` on `godaddy_domain`: the nameservers GoDaddy reports.
 
+### Security
+- DNS Create no longer deletes records. For types that allow several records at one name
+  (TXT, MX, A and the rest), a new record is added next to the existing ones, with or
+  without `allow_overwrite`. Before, `allow_overwrite = true` replaced the whole set, so
+  adding a TXT record could delete an SPF record.
+- DNS read, create, update and delete on one domain, type and name now run one at a time,
+  so parallel resources on the same set cannot overwrite each other's records.
+- DNS refresh no longer hides changes made outside Terraform. See "Changed" below.
+- `domain` and `name` are validated, and every value placed in an API URL is escaped. A
+  name such as `../other.com` could reach another domain's API path before.
+- The client refuses HTTP redirects. Go's default would resend the Authorization header.
+- The wait asked for by a 429 response is capped at 60 seconds. Before, a server value
+  could make the provider sleep for years.
+- Error bodies are read up to 64 KiB. Rate-limit logs go to the Terraform log, not stdout.
+- The domain transfer code (`authCode`) is no longer read into memory.
+- Contact blocks on `godaddy_domain` are marked sensitive (personal data).
+- `environment` must be `production` or `test`. Any other value is an error. Before, a
+  typo such as `staging` sent changes to production.
+- Release workflow: the manual tag input is validated and passed through an env var
+  (it was pasted into a shell script), GoReleaser is pinned to v2.18.3, the job runs in
+  a `release` environment, and the release fails on an untidy `go.mod` instead of
+  changing it. New `Test` workflow on every PR: vet, race tests, govulncheck.
+- Go 1.26 and dependency updates (`golang.org/x/net`, `golang.org/x/text`,
+  `google.golang.org/grpc`) fix the vulnerabilities govulncheck reported.
+- `scripts/import-helper.sh` sends credentials to curl on stdin, not on the command line,
+  and escapes API data written into generated `.tf` files.
+- `scripts/security-check.sh` no longer contains fragments of a specific key.
+
+### Changed
+- `godaddy_domain`: `locked`, `renew_auto`, `privacy` and `expiration_protected` have no
+  default. Unset means "keep the current value". Before, unset meant `locked = true`,
+  `renew_auto = true` and `privacy = false`, so an apply could lock a domain during a
+  transfer or turn on auto-renewal (and its charge). If you relied on those defaults,
+  set the values in your config.
+- `godaddy_domain`: the provider cannot change `privacy` or `expiration_protected`. If
+  the config asks for a value that differs from the live one, the update now fails with
+  an error. Before, the change was ignored and the plan showed it forever.
+- `godaddy_dns_record`: when no live record matches the stored data, a CNAME, SOA or
+  DNAME record shows its live value in the plan. Other types are removed from state and
+  created again on the next apply. Before, the old state was kept.
+- `api_key` and `api_secret` are trimmed.
+- Building from source needs Go 1.26 or later.
+
 ### Fixed
 - Not-found checks match the HTTP status, not the text "404" anywhere in the error.
 - `godaddy_domain` create applied nothing: it read the live values over the plan before

@@ -23,9 +23,7 @@ resource "godaddy_domain" "example" {
   
   # Configure domain settings
   locked              = true
-  privacy             = false
   renew_auto          = true
-  expiration_protected = true
 }
 
 # Example DNS record resources (to be imported)
