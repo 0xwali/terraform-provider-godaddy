@@ -288,6 +288,11 @@ func (r *DomainResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
+	if err := checkReadOnlyDomainSettings(&data, domain); err != nil {
+		resp.Diagnostics.AddError("Unsupported Domain Setting", err.Error())
+		return
+	}
+
 	if err := r.applyDomainSettings(ctx, &data, domain); err != nil {
 		resp.Diagnostics.AddError(
 			"Error Updating Domain Settings",

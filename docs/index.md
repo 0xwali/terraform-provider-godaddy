@@ -110,26 +110,39 @@ on v1, domain reads fail with a v1 error.
 
 #### Method 1: Environment Variables (Recommended)
 
-```bash
-# Personal Access Token
-export GODADDY_API_TOKEN="your-pat"
+Set one of the two credential types, never both.
 
-# Or the classic key and secret
+With a Personal Access Token:
+
+```bash
+export GODADDY_API_TOKEN="your-pat"
+export GODADDY_ENVIRONMENT="production"  # or "test"
+```
+
+Or with the classic key and secret:
+
+```bash
 export GODADDY_API_KEY="your-api-key"
 export GODADDY_API_SECRET="your-api-secret"
-
 export GODADDY_ENVIRONMENT="production"  # or "test"
 ```
 
 #### Method 2: Provider Configuration
+
+Use one of the two blocks below, never both.
+
+With a Personal Access Token:
 
 ```terraform
 provider "godaddy" {
   api_token   = "your-pat"
   environment = "production"
 }
+```
 
-# Or the classic key and secret
+Or with the classic key and secret:
+
+```terraform
 provider "godaddy" {
   api_key     = "your-api-key"
   api_secret  = "your-api-secret"

@@ -97,14 +97,20 @@ stray variable cannot switch Terraform to another GoDaddy account.
 
 Set these environment variables to avoid hardcoding credentials:
 
-```bash
-# Personal Access Token
-export GODADDY_API_TOKEN="your-pat"
+Set one of the two credential types, never both.
 
-# Or the classic key and secret
+With a Personal Access Token:
+
+```bash
+export GODADDY_API_TOKEN="your-pat"
+export GODADDY_ENVIRONMENT="production"  # or "test" for OTE
+```
+
+Or with the classic key and secret:
+
+```bash
 export GODADDY_API_KEY="your-api-key"
 export GODADDY_API_SECRET="your-api-secret"
-
 export GODADDY_ENVIRONMENT="production"  # or "test" for OTE
 ```
 

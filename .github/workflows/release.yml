@@ -33,6 +33,21 @@ jobs:
           # Allow goreleaser to access older tag information.
           fetch-depth: 0
 
+      # go.mod says go 1.26.0, the minimum. Build releases with the latest
+      # 1.26 patch so they carry the current standard library fixes.
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+          # No build cache in the release job: a cache written by another
+          # workflow run could change what gets signed.
+          cache: false
+
+      # Fail instead of letting the release rewrite go.mod or go.sum. This runs
+      # before the tag step, so an untidy module never gets a pushed tag.
+      - name: Check go.mod and go.sum are tidy
+        run: go mod tidy -diff
+
       # Create and push tag if manual trigger.
       # The tag comes from user input. It is passed through an env var, never
       # pasted into the script, and checked before use, so it cannot inject
@@ -50,20 +65,6 @@ jobs:
           git config user.email walid@ettayeb.fr
           git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
           git push origin "refs/tags/$RELEASE_TAG"
-
-      # go.mod says go 1.26.0, the minimum. Build releases with the latest
-      # 1.26 patch so they carry the current standard library fixes.
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version: '1.26.x'
-          check-latest: true
-          # No build cache in the release job: a cache written by another
-          # workflow run could change what gets signed.
-          cache: false
-
-      # Fail instead of letting the release rewrite go.mod or go.sum.
-      - name: Check go.mod and go.sum are tidy
-        run: go mod tidy -diff
 
       - name: Import GPG key
         uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6.3.0
