@@ -462,6 +462,9 @@ func (r *DomainResource) applyDomainSettings(ctx context.Context, model *DomainR
 	// Check if nameservers need update
 	if nameservers := listStrings(model.Nameservers); len(nameservers) > 0 {
 		if !nameserversMatch(nameservers, currentDomain.Nameservers) {
+			if isGoDaddyNameserverSet(nameservers) {
+				nameservers = r.assignedGoDaddyNameservers(ctx, model.Domain.ValueString(), nameservers)
+			}
 			update.NameServers = nameservers
 			needsUpdate = true
 		}
@@ -629,6 +632,34 @@ func nameserversMatch(want, have []string) bool {
 		seen[key]--
 	}
 	return true
+}
+
+// assignedGoDaddyNameservers returns the GoDaddy pair to send when moving a
+// domain back to GoDaddy DNS. GoDaddy rejects hostnames it does not run, such
+// as ns1.domaincontrol.com (422 NAMESERVER_REJECTED), but the zone keeps the
+// pair GoDaddy assigned in its NS records at "@", also while the domain uses
+// other nameservers. Falls back to the configured list when the zone has none.
+func (r *DomainResource) assignedGoDaddyNameservers(ctx context.Context, domain string, want []string) []string {
+	records, err := r.client.GetDNSRecordsByTypeAndName(ctx, domain, "NS", "@")
+	if err != nil {
+		tflog.Warn(ctx, "Could not read the zone NS records, sending the configured nameservers",
+			map[string]interface{}{"domain": domain, "error": err.Error()})
+		return want
+	}
+	return pickGoDaddyNameservers(want, records)
+}
+
+func pickGoDaddyNameservers(want []string, zoneNS []godaddy.DNSRecord) []string {
+	var assigned []string
+	for _, record := range zoneNS {
+		if ns := normalizeNameserver(record.Data); strings.HasSuffix(ns, goDaddyNameserverSuffix) {
+			assigned = append(assigned, ns)
+		}
+	}
+	if len(assigned) < 2 {
+		return want
+	}
+	return assigned
 }
 
 // listStrings returns the known string elements of a list, or nil when the

@@ -111,3 +111,22 @@ func TestUpdateModelFromDomain_NoLiveNameserversClearsUnknown(t *testing.T) {
 		t.Errorf("nameservers = %v, want null, never unknown, after apply", model.Nameservers)
 	}
 }
+
+func TestPickGoDaddyNameservers(t *testing.T) {
+	want := []string{"ns1.domaincontrol.com", "ns2.domaincontrol.com"}
+	zone := []godaddy.DNSRecord{
+		{Type: "NS", Name: "@", Data: "NS39.domaincontrol.com."},
+		{Type: "NS", Name: "@", Data: "ns40.domaincontrol.com"},
+	}
+	if got := pickGoDaddyNameservers(want, zone); len(got) != 2 || got[0] != "ns39.domaincontrol.com" || got[1] != "ns40.domaincontrol.com" {
+		t.Errorf("got %v, want the assigned pair from the zone", got)
+	}
+
+	external := []godaddy.DNSRecord{{Data: "ada.ns.cloudflare.com"}, {Data: "ns39.domaincontrol.com"}}
+	if got := pickGoDaddyNameservers(want, external); got[0] != "ns1.domaincontrol.com" {
+		t.Errorf("got %v, want the configured list when the zone has fewer than 2 GoDaddy hosts", got)
+	}
+	if got := pickGoDaddyNameservers(want, nil); got[0] != "ns1.domaincontrol.com" {
+		t.Errorf("got %v, want the configured list when the zone has no NS records", got)
+	}
+}

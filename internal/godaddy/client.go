@@ -20,11 +20,21 @@ import (
 type APIError struct {
 	StatusCode int
 	Body       string
+	// Hint explains the likely cause, because GoDaddy answers a call
+	// outside the token's scopes with 401 and an empty body.
+	Hint string
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("API error: status %d, body: %s", e.StatusCode, e.Body)
+	msg := fmt.Sprintf("API error: status %d, body: %s", e.StatusCode, e.Body)
+	if e.Hint != "" {
+		msg += " (" + e.Hint + ")"
+	}
+	return msg
 }
+
+const tokenScopeHint = "the API token is missing the scope this call needs, or it has expired or been revoked; " +
+	"see the scope table in the provider docs"
 
 // IsNotFound reports whether err wraps a GoDaddy 404 response. Use it
 // instead of matching "404" in the message: v3 error bodies carry random
@@ -206,7 +216,11 @@ func (c *Client) doRequestWithRetry(ctx context.Context, method, path string, bo
 			})
 		}
 
-		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
+		apiErr := &APIError{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
+		if c.UsesAPIToken() && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+			apiErr.Hint = tokenScopeHint
+		}
+		return nil, apiErr
 	}
 
 	return resp, nil

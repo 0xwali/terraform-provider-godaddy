@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   go to v1 with the same token.
 
 - `assigned_nameservers` on `godaddy_domain`: the nameservers GoDaddy reports.
+- A 401 or 403 on a token call adds a hint about missing scopes. GoDaddy answers a call outside
+  the token's scopes with 401 and an empty body.
 
 ### Security
 - DNS Create no longer deletes records. For types that allow several records at one name
@@ -68,7 +70,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `godaddy_domain` showed a change on every plan: unset contact blocks and the read-only
   fields came back as "known after apply". They now keep their last value.
 - GoDaddy nameservers: asking for any `*.domaincontrol.com` hosts no longer fails when GoDaddy
-  assigns the account's own pair. Other nameservers are compared without case, order or a
+  assigns the account's own pair. Moving a domain back to GoDaddy with hosts GoDaddy does not
+  run (`ns1.domaincontrol.com` gets `422 NAMESERVER_REJECTED`) now sends the pair from the
+  zone's `NS` records instead. Other nameservers are compared without case, order or a
   trailing dot, and a mismatch after apply is a clear "Nameservers Not Applied" error.
 
 ### Unchanged

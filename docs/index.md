@@ -68,8 +68,9 @@ You can create a Personal Access Token, or a classic key and secret, in the
 | `godaddy_dns_record` and the `godaddy_dns_records` data source | `domains.domain:read`, plus `domains.dns:update` to change records |
 
 Anything that reads a domain or its records needs `domains.domain:read`. A token without
-a scope gets `403 Forbidden` on the calls that need it. Scope names are from
-[GoDaddy's auth docs](https://developer.godaddy.com/docs/api-users/auth).
+a scope gets `401 Unauthorized` with an empty body on the calls that need it (tested on
+live GoDaddy; its docs say 403). The provider adds a hint about scopes to that error.
+Scope names are from [GoDaddy's auth docs](https://developer.godaddy.com/docs/api-users/auth).
 
 Only set what the token may change. Unset `locked` and `renew_auto` keep the domain's
 current values, so a token with only `domains.domain:read` and `domains.nameserver:update`

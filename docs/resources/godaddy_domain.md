@@ -166,11 +166,19 @@ If contact information is not provided, the existing contact information from Go
 
 Changing nameservers may affect DNS resolution. Ensure your new nameservers are properly configured before applying changes.
 
-GoDaddy gives each account its own pair of GoDaddy nameservers (hosts ending in
-`domaincontrol.com`, such as `ns45.domaincontrol.com`). If you ask for any GoDaddy
-nameservers, for example `ns1.domaincontrol.com` and `ns2.domaincontrol.com`, GoDaddy puts
-the domain on your account's pair instead. The provider treats that as a match: no error and
-no diff. `assigned_nameservers` shows the pair GoDaddy picked.
+GoDaddy picks the GoDaddy nameservers (hosts ending in `domaincontrol.com`, such as
+`ns45.domaincontrol.com`) itself, and it can pick a new pair each time a domain moves back to
+them. It also rejects hosts it does not run, such as `ns1.domaincontrol.com`, with
+`422 NAMESERVER_REJECTED`. So:
+
+- Any list of `*.domaincontrol.com` hosts in `nameservers` means "use GoDaddy's
+  nameservers". When the domain already uses a GoDaddy pair, that is a match: no error and no
+  diff. `assigned_nameservers` shows the pair GoDaddy picked.
+- When the domain moves back to GoDaddy, the provider sends the pair from the zone's `NS`
+  records at `@` (GoDaddy keeps them while the domain uses other nameservers), not the hosts
+  in your list. GoDaddy then assigns its pair.
+- After `terraform import`, the first plan can show `nameservers` changing from the live pair
+  to your list. Applying it makes no API call; it only saves your list in the state.
 
 Other nameservers, such as Cloudflare's, must match exactly (case, order and a trailing dot do
 not matter). If GoDaddy reports different ones after the update, the apply fails with

@@ -200,3 +200,22 @@ func TestNewClient_TrimsCredentials(t *testing.T) {
 		t.Errorf("Authorization = %q, want trimmed credentials", auth)
 	}
 }
+
+func TestAPIError_ScopeHintOnlyForTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	tokenClient := NewTokenClient("pat")
+	tokenClient.baseURL = server.URL
+	_, err := tokenClient.GetDomain(context.Background(), "example.com")
+	if err == nil || !strings.Contains(err.Error(), "missing the scope") {
+		t.Errorf("token client error = %v, want the scope hint", err)
+	}
+
+	_, err = newTestClient(server.URL).GetDomain(context.Background(), "example.com")
+	if err == nil || strings.Contains(err.Error(), "scope") {
+		t.Errorf("key/secret client error = %v, want no scope hint", err)
+	}
+}
