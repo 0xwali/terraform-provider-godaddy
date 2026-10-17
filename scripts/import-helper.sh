@@ -17,7 +17,7 @@ DOMAIN=""
 RESOURCE_TYPE=""
 API_KEY=""
 API_SECRET=""
-ENVIRONMENT="production"
+ENVIRONMENT=""
 
 usage() {
     echo "Usage: $0 [OPTIONS]"

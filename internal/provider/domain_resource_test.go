@@ -101,3 +101,13 @@ func TestObjectToContact_UnknownAndNull(t *testing.T) {
 		t.Errorf("objectToContact(null) = %+v, want nil", got)
 	}
 }
+
+func TestUpdateModelFromDomain_NoLiveNameserversClearsUnknown(t *testing.T) {
+	r := &DomainResource{}
+	model := DomainResourceModel{Nameservers: types.ListUnknown(types.StringType)}
+	r.updateModelFromDomain(&model, &godaddy.DomainDetail{})
+
+	if model.Nameservers.IsUnknown() || !model.Nameservers.IsNull() {
+		t.Errorf("nameservers = %v, want null, never unknown, after apply", model.Nameservers)
+	}
+}

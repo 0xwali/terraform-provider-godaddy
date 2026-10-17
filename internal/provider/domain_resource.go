@@ -428,6 +428,10 @@ func (r *DomainResource) updateModelFromDomain(model *DomainResourceModel, domai
 		}
 	} else {
 		model.AssignedNameservers = types.ListNull(types.StringType)
+		// Never leave an unknown value in state after apply.
+		if model.Nameservers.IsUnknown() {
+			model.Nameservers = types.ListNull(types.StringType)
+		}
 	}
 
 	// Convert contacts

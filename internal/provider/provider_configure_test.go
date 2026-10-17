@@ -175,3 +175,17 @@ func TestConfigure_BlankTokenFallsBackToKey(t *testing.T) {
 		t.Fatal("want a key/secret client")
 	}
 }
+
+func TestConfigure_BlankKeyInEnvDoesNotConflictWithToken(t *testing.T) {
+	clearGoDaddyEnv(t)
+	t.Setenv("GODADDY_API_TOKEN", "pat")
+	t.Setenv("GODADDY_API_KEY", "   ")
+
+	client, diags := configureProvider(t, nil)
+	if diags.HasError() {
+		t.Fatalf("diagnostics = %v, want none for a whitespace-only key", diags)
+	}
+	if client == nil || !client.UsesAPIToken() {
+		t.Fatal("want the token client")
+	}
+}

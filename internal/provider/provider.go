@@ -111,7 +111,7 @@ func (p *GoDaddyProvider) Configure(ctx context.Context, req provider.ConfigureR
 		apiToken = data.APIToken.ValueString()
 	case !keyInConfig:
 		apiToken = os.Getenv("GODADDY_API_TOKEN")
-		if strings.TrimSpace(apiToken) != "" && (apiKey != "" || apiSecret != "") {
+		if strings.TrimSpace(apiToken) != "" && (strings.TrimSpace(apiKey) != "" || strings.TrimSpace(apiSecret) != "") {
 			resp.Diagnostics.AddError(
 				"Conflicting GoDaddy Credentials",
 				"GODADDY_API_TOKEN and GODADDY_API_KEY/GODADDY_API_SECRET are both set. "+
